@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -22,10 +22,13 @@
 
 #include "stream.hpp"
 #include "common/aixlog.hpp"
+#include "common/snap_exception.hpp"
+#include "common/str_compat.hpp"
+#include "common/utils/logging.hpp"
 #include "time_provider.hpp"
 #include <cmath>
+#include <cstring>
 #include <iostream>
-#include <string.h>
 
 
 using namespace std;
@@ -34,6 +37,7 @@ namespace cs = chronos;
 static constexpr auto LOG_TAG = "Stream";
 static constexpr auto kCorrectionBegin = 100us;
 
+// #define LOG_LATENCIES
 
 Stream::Stream(const SampleFormat& in_format, const SampleFormat& out_format)
     : in_format_(in_format), median_(0), shortMedian_(0), lastUpdate_(0), playedFrames_(0), correctAfterXFrames_(0), bufferMs_(cs::msec(500)), frame_delta_(0),
@@ -42,6 +46,7 @@ Stream::Stream(const SampleFormat& in_format, const SampleFormat& out_format)
     buffer_.setSize(500);
     shortBuffer_.setSize(100);
     miniBuffer_.setSize(20);
+    latencies_.setSize(100);
 
     format_ = in_format_;
     if (out_format.isInitialized())
@@ -59,11 +64,6 @@ Stream::Stream(const SampleFormat& in_format, const SampleFormat& out_format)
     */
     // setRealSampleRate(format_.rate());
     resampler_ = std::make_unique<Resampler>(in_format_, format_);
-}
-
-
-Stream::~Stream()
-{
 }
 
 
@@ -89,7 +89,8 @@ void Stream::setBufferLen(size_t bufferLenMs)
 
 void Stream::clearChunks()
 {
-    while (chunks_.size() > 0)
+    std::lock_guard<std::mutex> lock(mutex_);
+    while (!chunks_.empty())
         chunks_.pop();
     resetBuffers();
 }
@@ -102,11 +103,24 @@ void Stream::addChunk(unique_ptr<msg::PcmChunk> chunk)
     if (age > 5s + bufferMs_)
         return;
 
-    // LOG(TRACE, LOG_TAG) << "new chunk: " << chunk->durationMs() << " ms, age: " << age.count() << " ms, Chunks: " << chunks_.size() << "\n";
-
     auto resampled = resampler_->resample(std::move(chunk));
     if (resampled)
-        chunks_.push(move(resampled));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        recent_ = resampled;
+        chunks_.push(resampled);
+
+        std::shared_ptr<msg::PcmChunk> front_;
+        while (chunks_.front_copy(front_))
+        {
+            age = std::chrono::duration_cast<cs::msec>(TimeProvider::serverNow() - front_->start());
+            if ((age > 5s + bufferMs_) && chunks_.try_pop(front_))
+                LOG(TRACE, LOG_TAG) << "Oldest chunk too old: " << age.count() << " ms, removing. Chunks in queue left: " << chunks_.size() << "\n";
+            else
+                break;
+        }
+    }
+    // LOG(TRACE, LOG_TAG) << "new chunk: " << chunk->durationMs() << " ms, age: " << age.count() << " ms, Chunks: " << chunks_.size() << "\n";
 }
 
 
@@ -125,15 +139,15 @@ void Stream::getSilentPlayerChunk(void* outputBuffer, uint32_t frames) const
 cs::time_point_clk Stream::getNextPlayerChunk(void* outputBuffer, uint32_t frames)
 {
     if (!chunk_ && !chunks_.try_pop(chunk_))
-        throw 0;
+        throw SnapException("No chunks available, requested frames: " + cpt::to_string(frames));
 
     cs::time_point_clk tp = chunk_->start();
     uint32_t read = 0;
     while (read < frames)
     {
         read += chunk_->readFrames(static_cast<char*>(outputBuffer) + read * format_.frameSize(), frames - read);
-        if (chunk_->isEndOfChunk() && !chunks_.try_pop(chunk_))
-            throw 0;
+        if ((read < frames) && chunk_->isEndOfChunk() && !chunks_.try_pop(chunk_))
+            throw SnapException("Not enough frames available, requested frames: " + cpt::to_string(frames) + ", available: " + cpt::to_string(read));
     }
     return tp;
 }
@@ -229,33 +243,28 @@ bool Stream::getPlayerChunk(void* outputBuffer, const cs::usec& outputBufferDacT
         return false;
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
     time_t now = time(nullptr);
     if (!chunk_ && !chunks_.try_pop(chunk_))
     {
         if (now != lastUpdate_)
         {
             lastUpdate_ = now;
-            LOG(INFO, LOG_TAG) << "no chunks available\n";
+            LOG(INFO, LOG_TAG) << "No chunks available\n";
         }
         return false;
     }
 
-    // calculate and log the estimated end to end latency
-    // static int64_t min_buffer = 0;
-    // std::shared_ptr<msg::PcmChunk> recent_;
-    // if (chunks_.back_copy(recent_))
-    // {
-    //     cs::nsec req_chunk_duration = cs::nsec(static_cast<cs::nsec::rep>(frames / format_.nsRate()));
-    //     auto youngest = recent_->end() - req_chunk_duration;
-    //     cs::msec age = std::chrono::duration_cast<cs::msec>(TimeProvider::serverNow() - youngest + outputBufferDacTime);
-    //     min_buffer = std::max(min_buffer, age.count());
-    //     if (now != lastUpdate_)
-    //     {
-    //         LOG(TRACE, LOG_TAG) << "getPlayerChunk duration: " << std::chrono::duration_cast<std::chrono::milliseconds>(req_chunk_duration).count()
-    //                             << ", min buffer: " << min_buffer << "\n";
-    //         min_buffer = 0;
-    //     }
-    // }
+#ifdef LOG_LATENCIES
+    // calculate the estimated end to end latency
+    if (recent_)
+    {
+        cs::nsec req_chunk_duration = cs::nsec(static_cast<cs::nsec::rep>(frames / format_.nsRate()));
+        auto youngest = recent_->end() - req_chunk_duration;
+        cs::msec age = std::chrono::duration_cast<cs::msec>(TimeProvider::serverNow() - youngest + outputBufferDacTime);
+        latencies_.add(age.count());
+    }
+#endif
 
     /// we have a chunk
     /// age = chunk age (server now - rec time: some positive value) - buffer (e.g. 1000ms) + time to DAC
@@ -283,10 +292,7 @@ bool Stream::getPlayerChunk(void* outputBuffer, const cs::usec& outputBufferDacT
             {
                 if (age.count() > 0)
                 {
-                    // TODO: should be enough to check if "age.count() > chunk->duration"
-                    // if "age.count > 0 && age.count < chunk->duration" then
-                    // the current chunk could be fast forwarded by age.count, instead of dropping the whole chunk
-                    LOG(DEBUG, LOG_TAG) << "age > 0: " << age.count() / 1000 << "ms\n";
+                    LOG(DEBUG, LOG_TAG) << "age > 0: " << age.count() / 1000 << "ms, dropping old chunks\n";
                     // age > 0: the top of the stream is too old. We must fast foward.
                     // delete the current chunk, it's too old. This will avoid an endless loop if there is no chunk in the queue.
                     chunk_ = nullptr;
@@ -296,6 +302,13 @@ bool Stream::getPlayerChunk(void* outputBuffer, const cs::usec& outputBufferDacT
                         LOG(DEBUG, LOG_TAG) << "age: " << age.count() / 1000 << ", requested chunk_duration: "
                                             << std::chrono::duration_cast<std::chrono::milliseconds>(req_chunk_duration).count()
                                             << ", duration: " << chunk_->duration<std::chrono::milliseconds>().count() << "\n";
+                        // check if the current chunk's end is older than age => can be player
+                        if ((age.count() > 0) && (age < chunk_->duration<cs::usec>()))
+                        {
+                            // fast forward by "age" to get in sync, i.e. age = 0
+                            chunk_->seek(static_cast<uint32_t>(chunk_->format.nsRate() * std::chrono::duration_cast<cs::nsec>(age).count()));
+                            age = 0s;
+                        }
                         if (age.count() <= 0)
                             break;
                     }
@@ -310,10 +323,13 @@ bool Stream::getPlayerChunk(void* outputBuffer, const cs::usec& outputBufferDacT
                     uint32_t silent_frames = static_cast<uint32_t>(-chunk_->format.nsRate() * std::chrono::duration_cast<cs::nsec>(age).count());
                     bool result = (silent_frames <= frames);
                     silent_frames = std::min(silent_frames, frames);
-                    LOG(DEBUG, LOG_TAG) << "Silent frames: " << silent_frames << ", frames: " << frames
-                                        << ", age: " << std::chrono::duration_cast<cs::usec>(age).count() / 1000. << "\n";
-                    getSilentPlayerChunk(outputBuffer, silent_frames);
-                    getNextPlayerChunk((char*)outputBuffer + (chunk_->format.frameSize() * silent_frames), frames - silent_frames);
+                    if (silent_frames > 0)
+                    {
+                        LOG(DEBUG, LOG_TAG) << "Silent frames: " << silent_frames << ", frames: " << frames
+                                            << ", age: " << std::chrono::duration_cast<cs::usec>(age).count() / 1000. << "\n";
+                        getSilentPlayerChunk(outputBuffer, silent_frames);
+                    }
+                    getNextPlayerChunk(static_cast<char*>(outputBuffer) + (chunk_->format.frameSize() * silent_frames), frames - silent_frames);
 
                     if (result)
                     {
@@ -332,7 +348,7 @@ bool Stream::getPlayerChunk(void* outputBuffer, const cs::usec& outputBufferDacT
         if (correctAfterXFrames_ != 0)
         {
             playedFrames_ += frames;
-            if (playedFrames_ >= (uint32_t)abs(correctAfterXFrames_))
+            if (playedFrames_ >= static_cast<uint32_t>(abs(correctAfterXFrames_)))
             {
                 framesCorrection = static_cast<int32_t>(playedFrames_) / correctAfterXFrames_;
                 playedFrames_ %= abs(correctAfterXFrames_);
@@ -394,19 +410,43 @@ bool Stream::getPlayerChunk(void* outputBuffer, const cs::usec& outputBufferDacT
         // update median_ and shortMedian_ and print sync stats
         if (now != lastUpdate_)
         {
+            // log buffer stats
             lastUpdate_ = now;
             median_ = buffer_.median();
             shortMedian_ = shortBuffer_.median();
             LOG(DEBUG, "Stats") << "Chunk: " << age.count() / 100 << "\t" << miniBuffer_.median() / 100 << "\t" << shortMedian_ / 100 << "\t" << median_ / 100
                                 << "\t" << buffer_.size() << "\t" << cs::duration<cs::msec>(outputBufferDacTime) << "\t" << frame_delta_ << "\n";
             frame_delta_ = 0;
+
+#ifdef LOG_LATENCIES
+            // log latencies
+            std::array<uint8_t, 5> percents = {100, 99, 95, 50, 5};
+            auto percentiles = latencies_.percentiles(percents);
+            std::stringstream ss;
+            for (std::size_t n = 0; n < percents.size(); ++n)
+                ss << ((n > 0) ? ", " : "") << (int)percents[n] << "%: " << percentiles[n];
+            LOG(DEBUG, "Latency") << ss.str() << "\n";
+#endif
         }
         return (abs(cs::duration<cs::msec>(age)) < 500);
     }
-    catch (int e)
+    catch (const std::exception& e)
     {
-        LOG(INFO, LOG_TAG) << "Exception: " << e << "\n";
+        LOG(INFO, LOG_TAG) << "Exception: " << e.what() << "\n";
         hard_sync_ = true;
         return false;
     }
+}
+
+
+bool Stream::getPlayerChunkOrSilence(void* outputBuffer, const chronos::usec& outputBufferDacTime, uint32_t frames)
+{
+    bool result = getPlayerChunk(outputBuffer, outputBufferDacTime, frames);
+    if (!result)
+    {
+        static utils::logging::TimeConditional cond(1s);
+        LOG(DEBUG, LOG_TAG) << cond << "Failed to get chunk, returning silence\n";
+        getSilentPlayerChunk(outputBuffer, frames);
+    }
+    return result;
 }

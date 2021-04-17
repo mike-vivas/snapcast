@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,7 +21,14 @@
 
 #include "control_session.hpp"
 #include <boost/beast/core.hpp>
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #include <boost/beast/websocket.hpp>
+#pragma GCC diagnostic pop
+#else
+#include <boost/beast/websocket.hpp>
+#endif
 #include <deque>
 
 namespace beast = boost::beast;         // from <boost/beast.hpp>
@@ -51,7 +58,7 @@ public:
 protected:
     // HTTP methods
     void on_read(beast::error_code ec, std::size_t bytes_transferred);
-    void on_write(beast::error_code ec, std::size_t, bool close);
+    void on_write(beast::error_code ec, std::size_t bytes, bool close);
 
     template <class Body, class Allocator, class Send>
     void handle_request(http::request<Body, http::basic_fields<Allocator>>&& req, Send&& send);

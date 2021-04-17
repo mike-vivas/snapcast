@@ -12,6 +12,7 @@ set(SERVER_SOURCES
     stream_session_ws.cpp
     encoder/encoder_factory.cpp
     encoder/pcm_encoder.cpp
+    encoder/null_encoder.cpp
     streamreader/base64.cpp
     streamreader/stream_uri.cpp
     streamreader/stream_manager.cpp
@@ -22,6 +23,7 @@ set(SERVER_SOURCES
     streamreader/file_stream.cpp
     streamreader/airplay_stream.cpp
     streamreader/librespot_stream.cpp
+    streamreader/meta_stream.cpp
     streamreader/watchdog.cpp
     streamreader/process_stream.cpp)
 
@@ -92,5 +94,6 @@ target_link_libraries(snapserver ${SERVER_LIBRARIES})
 install(TARGETS snapserver COMPONENT server DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES snapserver.1 COMPONENT server DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 install(FILES etc/snapserver.conf COMPONENT server DESTINATION ${CMAKE_INSTALL_SYSCONFDIR})
+install(FILES etc/index.html COMPONENT server DESTINATION ${CMAKE_INSTALL_DATADIR}/snapserver)
 install(DIRECTORY etc/snapweb/ DESTINATION ${CMAKE_INSTALL_DATADIR}/snapserver/snapweb)
 #install(FILES ../debian/snapserver.service DESTINATION ${SYSTEMD_SERVICES_INSTALL_DIR})

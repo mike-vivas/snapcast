@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -40,7 +40,7 @@ class Stream
 {
 public:
     Stream(const SampleFormat& in_format, const SampleFormat& out_format);
-    virtual ~Stream();
+    virtual ~Stream() = default;
 
     /// Adds PCM data to the queue
     void addChunk(std::unique_ptr<msg::PcmChunk> chunk);
@@ -48,7 +48,16 @@ public:
 
     /// Get PCM data, which will be played out in "outputBufferDacTime" time
     /// frame = (num_channels) * (1 sample in bytes) = (2 channels) * (2 bytes (16 bits) per sample) = 4 bytes (32 bits)
+    /// @param[out] outputBuffer the buffer to be filled with PCM data
+    /// @param outputBufferDacTime the duration until the PCM chunk will be audible
+    /// @param frames the number of requested frames to be copied into outputBuffer
+    /// @return true if a chunk was available and successfully copied to outputBuffer
     bool getPlayerChunk(void* outputBuffer, const chronos::usec& outputBufferDacTime, uint32_t frames);
+
+    /// Try to get a player chunk and fill the buffer with silence if it fails
+    /// @sa getPlayerChunk
+    /// @return true if a chunk was available and successfully copied to outputBuffer, else false and outputBuffer is filled with silence
+    bool getPlayerChunkOrSilence(void* outputBuffer, const chronos::usec& outputBufferDacTime, uint32_t frames);
 
     /// "Server buffer": playout latency, e.g. 1000ms
     void setBufferLen(size_t bufferLenMs);
@@ -94,7 +103,11 @@ private:
     DoubleBuffer<chronos::usec::rep> miniBuffer_;
     DoubleBuffer<chronos::usec::rep> shortBuffer_;
     DoubleBuffer<chronos::usec::rep> buffer_;
+    /// current chunk (oldest, to be played)
     std::shared_ptr<msg::PcmChunk> chunk_;
+    /// most recent chunk (newly queued)
+    std::shared_ptr<msg::PcmChunk> recent_;
+    DoubleBuffer<chronos::msec::rep> latencies_;
 
     chronos::usec::rep median_;
     chronos::usec::rep shortMedian_;
@@ -109,6 +122,8 @@ private:
     std::vector<char> read_buffer_;
     int frame_delta_;
     // int64_t next_us_;
+
+    mutable std::mutex mutex_;
 
     bool hard_sync_;
 };

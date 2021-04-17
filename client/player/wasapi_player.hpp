@@ -19,9 +19,15 @@
 #ifndef WASAPI_PLAYER_HPP
 #define WASAPI_PLAYER_HPP
 
+#pragma warning(push)
+#pragma warning(disable : 4100)
+
 #include "player.hpp"
 #include <audiopolicy.h>
 #include <endpointvolume.h>
+
+namespace player
+{
 
 class AudioSessionEventListener : public IAudioSessionEvents
 {
@@ -166,13 +172,15 @@ public:
     HRESULT STDMETHODCALLTYPE OnNotify(PAUDIO_VOLUME_NOTIFICATION_DATA pNotify);
 };
 
+static constexpr auto WASAPI = "wasapi";
+
 class WASAPIPlayer : public Player
 {
 public:
     WASAPIPlayer(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream);
     virtual ~WASAPIPlayer();
 
-    static std::vector<PcmDevice> pcm_list(void);
+    static std::vector<PcmDevice> pcm_list();
 
 protected:
     virtual void worker();
@@ -186,5 +194,9 @@ private:
     IAudioEndpointVolume* audioEndpointListener_;
     ClientSettings::SharingMode mode_;
 };
+
+#pragma warning(pop)
+
+} // namespace player
 
 #endif

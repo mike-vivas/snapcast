@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -29,10 +29,6 @@
 
 using namespace std;
 
-
-Config::Config()
-{
-}
 
 
 Config::~Config()
@@ -94,7 +90,7 @@ void Config::init(const std::string& root_directory, const std::string& user, co
         {
             json j;
             ifs >> j;
-            if (j.count("ConfigVersion"))
+            if (j.count("ConfigVersion") != 0u)
             {
                 json jGroups = j["Groups"];
                 for (auto& jGroup : jGroups)
@@ -132,7 +128,7 @@ ClientInfoPtr Config::getClientInfo(const std::string& clientId) const
     if (clientId.empty())
         return nullptr;
 
-    for (auto group : groups)
+    for (const auto& group : groups)
     {
         for (auto client : group->clients)
         {
@@ -183,7 +179,7 @@ GroupPtr Config::getGroupFromClient(const std::string& clientId)
 {
     for (auto group : groups)
     {
-        for (auto c : group->clients)
+        for (const auto& c : group->clients)
         {
             if (c->id == clientId)
                 return group;
@@ -219,7 +215,7 @@ json Config::getServerStatus(const json& streams) const
 json Config::getGroups() const
 {
     json result = json::array();
-    for (auto group : groups)
+    for (const auto& group : groups)
         result.push_back(group->toJson());
     return result;
 }

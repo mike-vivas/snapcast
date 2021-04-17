@@ -14,7 +14,7 @@
 #   You should have received a copy of the GNU General Public License
 #   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-VERSION = 0.21.0
+VERSION = 0.24.0
 BIN = snapserver
 
 ifeq ($(TARGET), FREEBSD)
@@ -42,9 +42,9 @@ ifneq ($(SANITIZE), )
 	LDFLAGS += -fsanitize=$(SANITIZE)
 endif
 
-CXXFLAGS += $(ADD_CFLAGS) -std=c++14 -Wall -Wextra -Wpedantic -Wno-unused-function -DBOOST_ERROR_CODE_HEADER_ONLY -DHAS_FLAC -DHAS_OGG -DHAS_VORBIS -DHAS_VORBIS_ENC -DHAS_OPUS -DVERSION=\"$(VERSION)\" -I. -I.. -I../common
+CXXFLAGS += $(ADD_CFLAGS) -std=c++14 -Wall -Wextra -Wpedantic -Wno-unused-function -DBOOST_ERROR_CODE_HEADER_ONLY -DHAS_FLAC -DHAS_OGG -DHAS_VORBIS -DHAS_VORBIS_ENC -DHAS_OPUS -DHAS_SOXR -DVERSION=\"$(VERSION)\" -I. -I.. -I../common
 LDFLAGS  += $(ADD_LDFLAGS) -lvorbis -lvorbisenc -logg -lFLAC -lopus -lsoxr
-OBJ       = snapserver.o server.o config.o control_server.o control_session_tcp.o control_session_http.o control_session_ws.o stream_server.o stream_session.o stream_session_tcp.o stream_session_ws.o streamreader/stream_uri.o streamreader/base64.o streamreader/stream_manager.o streamreader/pcm_stream.o streamreader/posix_stream.o streamreader/pipe_stream.o streamreader/file_stream.o streamreader/tcp_stream.o streamreader/process_stream.o streamreader/airplay_stream.o streamreader/librespot_stream.o streamreader/watchdog.o encoder/encoder_factory.o encoder/flac_encoder.o encoder/opus_encoder.o encoder/pcm_encoder.o encoder/ogg_encoder.o ../common/sample_format.o ../common/resampler.o
+OBJ       = snapserver.o server.o config.o control_server.o control_session_tcp.o control_session_http.o control_session_ws.o stream_server.o stream_session.o stream_session_tcp.o stream_session_ws.o streamreader/stream_uri.o streamreader/base64.o streamreader/stream_manager.o streamreader/pcm_stream.o streamreader/posix_stream.o streamreader/pipe_stream.o streamreader/file_stream.o streamreader/tcp_stream.o streamreader/process_stream.o streamreader/airplay_stream.o streamreader/meta_stream.o streamreader/librespot_stream.o streamreader/watchdog.o encoder/encoder_factory.o encoder/flac_encoder.o encoder/opus_encoder.o encoder/pcm_encoder.o encoder/null_encoder.o encoder/ogg_encoder.o ../common/sample_format.o ../common/resampler.o
 
 ifneq (,$(TARGET))
 CXXFLAGS += -D$(TARGET)
@@ -62,15 +62,15 @@ LDFLAGS  += -L$(NDK_DIR)/lib -pie -llog -latomic
 
 else ifeq ($(TARGET), OPENWRT)
 
-CXXFLAGS += -DNO_CPP11_STRING -DHAS_AVAHI -DHAS_DAEMON -pthread
+CXXFLAGS += -DNO_CPP11_STRING -DHAS_AVAHI -DHAS_DAEMON -DHAS_ALSA -pthread
 LDFLAGS  += -lavahi-client -lavahi-common -latomic
-OBJ      += ../common/daemon.o publishZeroConf/publish_avahi.o 
+OBJ      += ../common/daemon.o publishZeroConf/publish_avahi.o streamreader/alsa_stream.o
 
 else ifeq ($(TARGET), BUILDROOT)
 
-CXXFLAGS += -DHAS_AVAHI -DHAS_DAEMON -pthread
+CXXFLAGS += -DHAS_AVAHI -DHAS_DAEMON -DHAS_ALSA -pthread
 LDFLAGS  += -lrt -lavahi-client -lavahi-common
-OBJ      += publishZeroConf/publish_avahi.o 
+OBJ      += publishZeroConf/publish_avahi.o streamreader/alsa_stream.o
 
 else ifeq ($(TARGET), FREEBSD)
 
@@ -89,9 +89,9 @@ OBJ      += ../common/daemon.o publishZeroConf/publish_bonjour.o
 else
 
 CXX       = g++
-CXXFLAGS += -DHAS_AVAHI -DHAS_DAEMON -pthread
-LDFLAGS  += -lrt -lavahi-client -lavahi-common -latomic
-OBJ      += ../common/daemon.o publishZeroConf/publish_avahi.o 
+CXXFLAGS += -DHAS_AVAHI -DHAS_DAEMON -DHAS_ALSA -pthread
+LDFLAGS  += -lrt -lasound -lavahi-client -lavahi-common -latomic
+OBJ      += ../common/daemon.o publishZeroConf/publish_avahi.o streamreader/alsa_stream.o
 
 endif
 
@@ -125,6 +125,7 @@ install:
 	install -g wheel -o root -m 555 $(BIN).1 $(TARGET_DIR)/local/man/man1/$(BIN).1
 	install -g wheel -o root -m 555 etc/$(BIN).bsd $(TARGET_DIR)/local/etc/rc.d/$(BIN)
 	install -g wheel -o root etc/$(BIN).conf /etc/$(BIN).conf
+	install -g wheel -o root -m 644 etc/index.html -Dt /usr/share/snapserver/
 	for file in etc/snapweb/*\.*; do install -g wheel -o root -m 644 $${file} -Dt "/usr/share/snapserver/snapweb/"; done
 	for file in etc/snapweb/3rd-party/*\.*; do install -g wheel -o root -m 644 $${file} -Dt "/usr/share/snapserver/snapweb/3rd-party/"; done
 
@@ -136,6 +137,7 @@ install:
 	install -g wheel -o root $(BIN).1 $(TARGET_DIR)/local/share/man/man1/$(BIN).1
 	install -g wheel -o root etc/$(BIN).plist /Library/LaunchAgents/de.badaix.snapcast.$(BIN).plist
 	install -g wheel -o root etc/$(BIN).conf /etc/$(BIN).conf
+	install -g wheel -o root -m 644 etc/index.html -Dt /usr/share/snapserver/
 	for file in etc/snapweb/*\.*; do install -g wheel -o root -m 644 $${file} -Dt "/usr/share/snapserver/snapweb/"; done
 	for file in etc/snapweb/3rd-party/*\.*; do install -g wheel -o root -m 644 $${file} -Dt "/usr/share/snapserver/snapweb/3rd-party/"; done
 	launchctl load /Library/LaunchAgents/de.badaix.snapcast.$(BIN).plist
@@ -163,6 +165,7 @@ installfiles:
 	install -s -D -g root -o root $(BIN) $(TARGET_DIR)/bin/$(BIN)
 	install -D -g root -o root $(BIN).1 $(TARGET_DIR)/share/man/man1/$(BIN).1
 	install -g root -o root etc/$(BIN).conf /etc/$(BIN).conf;
+	install -g root -o root -m 644 etc/index.html -Dt /usr/share/snapserver/
 	for file in etc/snapweb/*\.*; do install -g root -o root -m 644 $${file} -Dt "/usr/share/snapserver/snapweb/"; done
 	for file in etc/snapweb/3rd-party/*\.*; do install -g root -o root -m 644 $${file} -Dt "/usr/share/snapserver/snapweb/3rd-party/"; done
 

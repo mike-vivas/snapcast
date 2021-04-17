@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,7 +19,7 @@
 #include <chrono>
 #include <iostream>
 #ifndef WINDOWS
-#include <signal.h>
+#include <csignal>
 #include <sys/resource.h>
 #endif
 
@@ -29,9 +29,13 @@
 #ifdef HAS_ALSA
 #include "player/alsa_player.hpp"
 #endif
+#ifdef HAS_PULSE
+#include "player/pulse_player.hpp"
+#endif
 #ifdef HAS_WASAPI
 #include "player/wasapi_player.hpp"
 #endif
+#include "player/file_player.hpp"
 #ifdef HAS_DAEMON
 #include "common/daemon.hpp"
 #endif
@@ -40,30 +44,39 @@
 #include "common/snap_exception.hpp"
 #include "common/str_compat.hpp"
 #include "common/utils.hpp"
+#include "common/version.hpp"
 #include "metadata.hpp"
 
 
 using namespace std;
 using namespace popl;
+using namespace player;
 
 using namespace std::chrono_literals;
 
 static constexpr auto LOG_TAG = "Snapclient";
 
-PcmDevice getPcmDevice(const std::string& soundcard)
-{
-#if defined(HAS_ALSA) || defined(HAS_WASAPI)
-    vector<PcmDevice> pcmDevices =
-#ifdef HAS_ALSA
-        AlsaPlayer::pcm_list();
-#else
-        WASAPIPlayer::pcm_list();
-#endif
 
+PcmDevice getPcmDevice(const std::string& player, const std::string& parameter, const std::string& soundcard)
+{
+#if defined(HAS_ALSA) || defined(HAS_PULSE) || defined(HAS_WASAPI)
+    vector<PcmDevice> pcm_devices;
+#if defined(HAS_ALSA)
+    if (player == player::ALSA)
+        pcm_devices = AlsaPlayer::pcm_list();
+#endif
+#if defined(HAS_PULSE)
+    if (player == player::PULSE)
+        pcm_devices = PulsePlayer::pcm_list(parameter);
+#endif
+#if defined(HAS_WASAPI)
+    if (player == player::WASAPI)
+        pcm_devices = WASAPIPlayer::pcm_list();
+#endif
     try
     {
         int soundcardIdx = cpt::stoi(soundcard);
-        for (auto dev : pcmDevices)
+        for (auto dev : pcm_devices)
             if (dev.idx == soundcardIdx)
                 return dev;
     }
@@ -71,15 +84,15 @@ PcmDevice getPcmDevice(const std::string& soundcard)
     {
     }
 
-    for (auto dev : pcmDevices)
+    for (auto dev : pcm_devices)
         if (dev.name.find(soundcard) != string::npos)
             return dev;
-    std::ignore = soundcard;
 #endif
-
-    PcmDevice pcmDevice;
-    pcmDevice.name = soundcard;
-    return pcmDevice;
+    std::ignore = player;
+    std::ignore = parameter;
+    PcmDevice pcm_device;
+    pcm_device.name = soundcard;
+    return pcm_device;
 }
 
 #ifdef WINDOWS
@@ -111,9 +124,9 @@ int main(int argc, char** argv)
     int exitcode = EXIT_SUCCESS;
     try
     {
-        string meta_script("");
+        string meta_script;
         ClientSettings settings;
-        string pcm_device("default");
+        string pcm_device(player::DEFAULT_DEVICE);
 
         OptionParser op("Allowed options");
         auto helpSwitch = op.add<Switch>("", "help", "produce help message");
@@ -125,21 +138,20 @@ int main(int argc, char** argv)
         op.add<Value<string>>("", "hostID", "unique host id, default is MAC address", "", &settings.host_id);
 
 // PCM device specific
-#if defined(HAS_ALSA) || defined(HAS_WASAPI)
+#if defined(HAS_ALSA) || defined(HAS_PULSE) || defined(HAS_WASAPI)
         auto listSwitch = op.add<Switch>("l", "list", "list PCM devices");
-        /*auto soundcardValue =*/op.add<Value<string>>("s", "soundcard", "index or name of the pcm device", "default", &pcm_device);
+        /*auto soundcardValue =*/op.add<Value<string>>("s", "soundcard", "index or name of the pcm device", pcm_device, &pcm_device);
 #endif
         /*auto latencyValue =*/op.add<Value<int>>("", "latency", "latency of the PCM device", 0, &settings.player.latency);
 #ifdef HAS_SOXR
         auto sample_format = op.add<Value<string>>("", "sampleformat", "resample audio stream to <rate>:<bits>:<channels>", "");
 #endif
 
-// audio backend
-#if defined(HAS_OBOE) && defined(HAS_OPENSL)
-        op.add<Value<string>>("", "player", "audio backend (oboe, opensl)", "oboe", &settings.player.player_name);
-#else
-        op.add<Value<string>, Attribute::hidden>("", "player", "audio backend (<empty>, file)", "", &settings.player.player_name);
-#endif
+        auto supported_players = Controller::getSupportedPlayerNames();
+        string supported_players_str;
+        for (const auto& supported_player : supported_players)
+            supported_players_str += (!supported_players_str.empty() ? "|" : "") + supported_player;
+        op.add<Value<string>>("", "player", supported_players_str + "[:<options>|?]", supported_players.front(), &settings.player.player_name);
 
 // sharing mode
 #if defined(HAS_OBOE) || defined(HAS_WASAPI)
@@ -185,27 +197,50 @@ int main(int argc, char** argv)
 
         if (versionSwitch->is_set())
         {
-            cout << "snapclient v" << VERSION << "\n"
-                 << "Copyright (C) 2014-2020 BadAix (snapcast@badaix.de).\n"
+            cout << "snapclient v" << version::code << (!version::rev().empty() ? (" (rev " + version::rev(8) + ")") : ("")) << "\n"
+                 << "Copyright (C) 2014-2021 BadAix (snapcast@badaix.de).\n"
                  << "License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.\n"
                  << "This is free software: you are free to change and redistribute it.\n"
                  << "There is NO WARRANTY, to the extent permitted by law.\n\n"
-                 << "Written by Johannes M. Pohl.\n\n";
+                 << "Written by Johannes M. Pohl and contributors <https://github.com/badaix/snapcast/graphs/contributors>.\n\n";
             exit(EXIT_SUCCESS);
         }
 
-#if defined(HAS_ALSA) || defined(HAS_WASAPI)
+        settings.player.player_name = utils::string::split_left(settings.player.player_name, ':', settings.player.parameter);
+
+#if defined(HAS_ALSA) || defined(HAS_PULSE) || defined(HAS_WASAPI)
         if (listSwitch->is_set())
         {
-            vector<PcmDevice> pcmDevices =
-#ifdef HAS_ALSA
-                AlsaPlayer::pcm_list();
-#else
-                WASAPIPlayer::pcm_list();
-#endif
-            for (auto dev : pcmDevices)
+            try
             {
-                cout << dev.idx << ": " << dev.name << "\n" << dev.description << "\n\n";
+                vector<PcmDevice> pcm_devices;
+#if defined(HAS_ALSA)
+                if (settings.player.player_name == player::ALSA)
+                    pcm_devices = AlsaPlayer::pcm_list();
+#endif
+#if defined(HAS_PULSE)
+                if (settings.player.player_name == player::PULSE)
+                    pcm_devices = PulsePlayer::pcm_list(settings.player.parameter);
+#endif
+#if defined(HAS_WASAPI)
+                if (settings.player.player_name == player::WASAPI)
+                    pcm_devices = WASAPIPlayer::pcm_list();
+#endif
+#ifdef WINDOWS
+                // Set console code page to UTF-8 so console known how to interpret string data
+                SetConsoleOutputCP(CP_UTF8);
+                // Enable buffering to prevent VS from chopping up UTF-8 byte sequences
+                setvbuf(stdout, nullptr, _IOFBF, 1000);
+#endif
+                for (const auto& dev : pcm_devices)
+                    cout << dev.idx << ": " << dev.name << "\n" << dev.description << "\n\n";
+
+                if (pcm_devices.empty())
+                    cout << "No PCM device available for audio backend \"" << settings.player.player_name << "\"\n";
+            }
+            catch (const std::exception& e)
+            {
+                cout << "Failed to get device list: " << e.what() << "\n";
             }
             exit(EXIT_SUCCESS);
         }
@@ -249,7 +284,7 @@ int main(int argc, char** argv)
         string logformat = "%Y-%m-%d %H-%M-%S.#ms [#severity] (#tag_func)";
         if (settings.logging.sink.find("file:") != string::npos)
         {
-            string logfile = settings.logging.sink.substr(settings.logging.sink.find(":") + 1);
+            string logfile = settings.logging.sink.substr(settings.logging.sink.find(':') + 1);
             AixLog::Log::init<AixLog::SinkFile>(logfilter, logfile, logformat);
         }
         else if (settings.logging.sink == "stdout")
@@ -263,6 +298,12 @@ int main(int argc, char** argv)
         else
             throw SnapException("Invalid log sink: " + settings.logging.sink);
 
+#if !defined(HAS_AVAHI) && !defined(HAS_BONJOUR)
+        if (settings.server.host.empty())
+            throw SnapException("Snapserver host not configured and mDNS not available, please configure with \"--host\".");
+#endif
+
+
 #ifdef HAS_DAEMON
         std::unique_ptr<Daemon> daemon;
         if (daemonOption->is_set())
@@ -270,13 +311,13 @@ int main(int argc, char** argv)
             string pidFile = "/var/run/snapclient/pid";
             if (settings.instance != 1)
                 pidFile += "." + cpt::to_string(settings.instance);
-            string user = "";
-            string group = "";
+            string user;
+            string group;
 
             if (userValue->is_set())
             {
                 if (userValue->value().empty())
-                    std::invalid_argument("user must not be empty");
+                    throw std::invalid_argument("user must not be empty");
 
                 vector<string> user_group = utils::string::split(userValue->value(), ':');
                 user = user_group[0];
@@ -290,15 +331,6 @@ int main(int argc, char** argv)
             LOG(NOTICE, LOG_TAG) << "daemonizing" << std::endl;
             daemon->daemonize();
             LOG(NOTICE, LOG_TAG) << "daemon started" << std::endl;
-        }
-#endif
-
-        settings.player.pcm_device = getPcmDevice(pcm_device);
-#if defined(HAS_ALSA)
-        if (settings.player.pcm_device.idx == -1)
-        {
-            cout << "PCM device \"" << pcm_device << "\" not found\n";
-            //			exit(EXIT_FAILURE);
         }
 #endif
 
@@ -316,6 +348,46 @@ int main(int argc, char** argv)
 
 #if defined(HAS_OBOE) || defined(HAS_WASAPI)
         settings.player.sharing_mode = (sharing_mode->value() == "exclusive") ? ClientSettings::SharingMode::exclusive : ClientSettings::SharingMode::shared;
+#endif
+
+        if (settings.player.parameter == "?")
+        {
+            if (settings.player.player_name == player::FILE)
+            {
+                cout << "Options are a comma separated list of:\n"
+                     << " \"filename=<filename>\" - with <filename> = \"stdout\", \"stderr\", \"null\" or a filename\n"
+                     << " \"mode=[w|a]\" - w: write (discarding the content), a: append (keeping the content)\n";
+            }
+#ifdef HAS_PULSE
+            else if (settings.player.player_name == player::PULSE)
+            {
+                cout << "Options are a comma separated list of:\n"
+                     << " \"buffer_time=<buffer size [ms]>\" - default 100, min 10\n"
+                     << " \"server=<PulseAudio server>\" - default not-set: use the default server\n";
+            }
+#endif
+#ifdef HAS_ALSA
+            else if (settings.player.player_name == player::ALSA)
+            {
+                cout << "Options are a comma separated list of:\n"
+                     << " \"buffer_time=<total buffer size [ms]>\" - default 80, min 10\n"
+                     << " \"fragments=<number of buffers>\" - default 4, min 2\n";
+            }
+#endif
+            else
+            {
+                cout << "No options available for \"" << settings.player.player_name << "\n";
+            }
+            exit(EXIT_SUCCESS);
+        }
+
+        settings.player.pcm_device = getPcmDevice(settings.player.player_name, settings.player.parameter, pcm_device);
+#if defined(HAS_ALSA)
+        if (settings.player.pcm_device.idx == -1)
+        {
+            cout << "PCM device \"" << pcm_device << "\" not found\n";
+            //			exit(EXIT_FAILURE);
+        }
 #endif
 
         string mode = utils::string::split_left(mixer_mode->value(), ':', settings.player.mixer.parameter);
@@ -349,6 +421,8 @@ int main(int argc, char** argv)
             io_context.stop();
         });
 
+        LOG(INFO, LOG_TAG) << "Version " << version::code << (!version::rev().empty() ? (", revision " + version::rev(8)) : ("")) << "\n";
+
         // Setup metadata handling
         auto meta(metaStderr ? std::make_unique<MetaStderrAdapter>() : std::make_unique<MetadataAdapter>());
         auto controller = make_shared<Controller>(io_context, settings, std::move(meta));
@@ -368,6 +442,6 @@ int main(int argc, char** argv)
         exitcode = EXIT_FAILURE;
     }
 
-    LOG(NOTICE, LOG_TAG) << "daemon terminated." << endl;
+    LOG(NOTICE, LOG_TAG) << "Snapclient terminated." << endl;
     exit(exitcode);
 }

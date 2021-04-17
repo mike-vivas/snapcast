@@ -16,12 +16,20 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#ifndef ALSA_PLAYER_H
-#define ALSA_PLAYER_H
+#ifndef ALSA_PLAYER_HPP
+#define ALSA_PLAYER_HPP
 
 #include "player.hpp"
-#include <alsa/asoundlib.h>
 
+#include <alsa/asoundlib.h>
+#include <boost/optional.hpp>
+#include <chrono>
+
+
+namespace player
+{
+
+static constexpr auto ALSA = "alsa";
 
 /// Audio Player
 /**
@@ -37,7 +45,7 @@ public:
     void stop() override;
 
     /// List the system's audio output devices
-    static std::vector<PcmDevice> pcm_list(void);
+    static std::vector<PcmDevice> pcm_list();
 
 protected:
     void worker() override;
@@ -49,6 +57,7 @@ private:
     /// free alsa and optionally the mixer
     /// @param uninit_mixer free the mixer
     void uninitAlsa(bool uninit_mixer);
+    bool getAvailDelay(snd_pcm_sframes_t& avail, snd_pcm_sframes_t& delay);
 
     void initMixer();
     void uninitMixer();
@@ -73,7 +82,11 @@ private:
     std::chrono::time_point<std::chrono::steady_clock> last_change_;
     std::recursive_mutex mutex_;
     boost::asio::steady_timer timer_;
+
+    boost::optional<std::chrono::microseconds> buffer_time_;
+    boost::optional<uint32_t> periods_;
 };
 
+} // namespace player
 
 #endif

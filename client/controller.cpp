@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -35,6 +35,9 @@
 #ifdef HAS_ALSA
 #include "player/alsa_player.hpp"
 #endif
+#ifdef HAS_PULSE
+#include "player/pulse_player.hpp"
+#endif
 #ifdef HAS_OPENSL
 #include "player/opensl_player.hpp"
 #endif
@@ -63,6 +66,7 @@
 #include <string>
 
 using namespace std;
+using namespace player;
 
 static constexpr auto LOG_TAG = "Controller";
 static constexpr auto TIME_SYNC_INTERVAL = 1s;
@@ -83,6 +87,31 @@ std::unique_ptr<Player> Controller::createPlayer(ClientSettings::Player& setting
         return make_unique<PlayerType>(io_context_, settings, stream_);
     }
     return nullptr;
+}
+
+std::vector<std::string> Controller::getSupportedPlayerNames()
+{
+    std::vector<std::string> result;
+#ifdef HAS_ALSA
+    result.emplace_back(player::ALSA);
+#endif
+#ifdef HAS_PULSE
+    result.emplace_back(player::PULSE);
+#endif
+#ifdef HAS_OBOE
+    result.emplace_back(player::OBOE);
+#endif
+#ifdef HAS_OPENSL
+    result.emplace_back(player::OPENSL);
+#endif
+#ifdef HAS_COREAUDIO
+    result.emplace_back(player::COREAUDIO);
+#endif
+#ifdef HAS_WASAPI
+    result.emplace_back(player::WASAPI);
+#endif
+    result.emplace_back(player::FILE);
+    return result;
 }
 
 
@@ -156,29 +185,33 @@ void Controller::getNextMessage()
 
 #ifdef HAS_ALSA
             if (!player_)
-                player_ = createPlayer<AlsaPlayer>(settings_.player, "alsa");
+                player_ = createPlayer<AlsaPlayer>(settings_.player, player::ALSA);
+#endif
+#ifdef HAS_PULSE
+            if (!player_)
+                player_ = createPlayer<PulsePlayer>(settings_.player, player::PULSE);
 #endif
 #ifdef HAS_OBOE
             if (!player_)
-                player_ = createPlayer<OboePlayer>(settings_.player, "oboe");
+                player_ = createPlayer<OboePlayer>(settings_.player, player::OBOE);
 #endif
 #ifdef HAS_OPENSL
             if (!player_)
-                player_ = createPlayer<OpenslPlayer>(settings_.player, "opensl");
+                player_ = createPlayer<OpenslPlayer>(settings_.player, player::OPENSL);
 #endif
 #ifdef HAS_COREAUDIO
             if (!player_)
-                player_ = createPlayer<CoreAudioPlayer>(settings_.player, "coreaudio");
+                player_ = createPlayer<CoreAudioPlayer>(settings_.player, player::COREAUDIO);
 #endif
 #ifdef HAS_WASAPI
             if (!player_)
-                player_ = createPlayer<WASAPIPlayer>(settings_.player, "wasapi");
+                player_ = createPlayer<WASAPIPlayer>(settings_.player, player::WASAPI);
 #endif
-            if (!player_ && (settings_.player.player_name == "file"))
-                player_ = createPlayer<FilePlayer>(settings_.player, "file");
+            if (!player_ && (settings_.player.player_name == player::FILE))
+                player_ = createPlayer<FilePlayer>(settings_.player, player::FILE);
 
             if (!player_)
-                throw SnapException("No audio player support");
+                throw SnapException("No audio player support" + (settings_.player.player_name.empty() ? "" : " for: " + settings_.player.player_name));
 
             player_->setVolumeCallback([this](double volume, bool muted) {
                 static double last_volume(-1);
@@ -203,10 +236,10 @@ void Controller::getNextMessage()
             player_->start();
             // Don't change the initial hardware mixer volume on the user's device.
             // The player class will send the device's volume to the server instead
-            if (settings_.player.mixer.mode != ClientSettings::Mixer::Mode::hardware)
-            {
-                player_->setVolume(serverSettings_->getVolume() / 100., serverSettings_->isMuted());
-            }
+            // if (settings_.player.mixer.mode != ClientSettings::Mixer::Mode::hardware)
+            // {
+            player_->setVolume(serverSettings_->getVolume() / 100., serverSettings_->isMuted());
+            // }
         }
         else if (response->type == message_type::kStreamTags)
         {
@@ -228,34 +261,35 @@ void Controller::getNextMessage()
 void Controller::sendTimeSyncMessage(int quick_syncs)
 {
     auto timeReq = std::make_shared<msg::Time>();
-    clientConnection_->sendRequest<msg::Time>(timeReq, 2s, [this, quick_syncs](const boost::system::error_code& ec,
-                                                                               const std::unique_ptr<msg::Time>& response) mutable {
-        if (ec)
-        {
-            LOG(ERROR, LOG_TAG) << "Time sync request failed: " << ec.message() << "\n";
-            reconnect();
-            return;
-        }
-        else
-        {
-            TimeProvider::getInstance().setDiff(response->latency, response->received - response->sent);
-        }
-
-        std::chrono::microseconds next = TIME_SYNC_INTERVAL;
-        if (quick_syncs > 0)
-        {
-            if (--quick_syncs == 0)
-                LOG(INFO, LOG_TAG) << "diff to server [ms]: " << (float)TimeProvider::getInstance().getDiffToServer<chronos::usec>().count() / 1000.f << "\n";
-            next = 100us;
-        }
-        timer_.expires_after(next);
-        timer_.async_wait([this, quick_syncs](const boost::system::error_code& ec) {
-            if (!ec)
+    clientConnection_->sendRequest<msg::Time>(
+        timeReq, 2s, [this, quick_syncs](const boost::system::error_code& ec, const std::unique_ptr<msg::Time>& response) mutable {
+            if (ec)
             {
-                sendTimeSyncMessage(quick_syncs);
+                LOG(ERROR, LOG_TAG) << "Time sync request failed: " << ec.message() << "\n";
+                reconnect();
+                return;
             }
+            else
+            {
+                TimeProvider::getInstance().setDiff(response->latency, response->received - response->sent);
+            }
+
+            std::chrono::microseconds next = TIME_SYNC_INTERVAL;
+            if (quick_syncs > 0)
+            {
+                if (--quick_syncs == 0)
+                    LOG(INFO, LOG_TAG) << "diff to server [ms]: "
+                                       << static_cast<float>(TimeProvider::getInstance().getDiffToServer<chronos::usec>().count()) / 1000.f << "\n";
+                next = 100us;
+            }
+            timer_.expires_after(next);
+            timer_.async_wait([this, quick_syncs](const boost::system::error_code& ec) {
+                if (!ec)
+                {
+                    sendTimeSyncMessage(quick_syncs);
+                }
+            });
         });
-    });
 }
 
 void Controller::browseMdns(const MdnsHandler& handler)

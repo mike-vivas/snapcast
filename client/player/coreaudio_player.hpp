@@ -16,14 +16,19 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#ifndef CORE_AUDIO_PLAYER_H
-#define CORE_AUDIO_PLAYER_H
+#ifndef CORE_AUDIO_PLAYER_HPP
+#define CORE_AUDIO_PLAYER_HPP
 
 #include <AudioToolbox/AudioQueue.h>
 #include <CoreAudio/CoreAudioTypes.h>
 #include <CoreFoundation/CFRunLoop.h>
 
 #include "player.hpp"
+
+namespace player
+{
+
+static constexpr auto COREAUDIO = "coreaudio";
 
 /// Audio Player
 /**
@@ -41,7 +46,7 @@ public:
     virtual ~CoreAudioPlayer();
 
     void playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRef);
-    static std::vector<PcmDevice> pcm_list(void);
+    static std::vector<PcmDevice> pcm_list();
 
 protected:
     void worker() override;
@@ -58,5 +63,6 @@ protected:
     long lastChunkTick;
 };
 
+} // namespace player
 
 #endif

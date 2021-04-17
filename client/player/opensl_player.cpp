@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,6 +26,9 @@
 
 using namespace std;
 
+namespace player
+{
+
 static constexpr auto LOG_TAG = "OpenSlPlayer";
 
 static constexpr auto kPhaseInit = "Init";
@@ -50,8 +53,8 @@ static void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void* context)
 
 
 OpenslPlayer::OpenslPlayer(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream)
-    : Player(io_context, settings, stream), engineObject(NULL), engineEngine(NULL), outputMixObject(NULL), bqPlayerObject(NULL), bqPlayerPlay(NULL),
-      bqPlayerBufferQueue(NULL), bqPlayerVolume(NULL), curBuffer(0), ms_(50), buff_size(0), pubStream_(stream)
+    : Player(io_context, settings, stream), engineObject(nullptr), engineEngine(nullptr), outputMixObject(nullptr), bqPlayerObject(nullptr),
+      bqPlayerPlay(nullptr), bqPlayerBufferQueue(nullptr), bqPlayerVolume(nullptr), curBuffer(0), ms_(50), buff_size(0), pubStream_(stream)
 {
     initOpensl();
 }
@@ -75,10 +78,9 @@ void OpenslPlayer::playerCallback(SLAndroidSimpleBufferQueueItf bq)
         return;
 
     chronos::usec delay(ms_ * 1000);
-    if (!pubStream_->getPlayerChunk(buffer[curBuffer], delay, frames_))
+    if (!pubStream_->getPlayerChunkOrSilence(buffer[curBuffer], delay, frames_))
     {
         // LOG(INFO, LOG_TAG) << "Failed to get chunk. Playing silence.\n";
-        memset(buffer[curBuffer], 0, buff_size);
     }
     else
     {
@@ -176,7 +178,7 @@ void OpenslPlayer::initOpensl()
     SLresult result;
     // create engine
     SLEngineOption engineOption[] = {{(SLuint32)SL_ENGINEOPTION_THREADSAFE, (SLuint32)SL_BOOLEAN_TRUE}};
-    result = slCreateEngine(&engineObject, 1, engineOption, 0, NULL, NULL);
+    result = slCreateEngine(&engineObject, 1, engineOption, 0, nullptr, nullptr);
     throwUnsuccess(kPhaseInit, "slCreateEngine", result);
     result = (*engineObject)->Realize(engineObject, SL_BOOLEAN_FALSE);
     throwUnsuccess(kPhaseInit, "EngineObject::Realize", result);
@@ -264,7 +266,7 @@ void OpenslPlayer::initOpensl()
 
     // configure audio sink
     SLDataLocator_OutputMix loc_outmix = {SL_DATALOCATOR_OUTPUTMIX, outputMixObject};
-    SLDataSink audioSnk = {&loc_outmix, NULL};
+    SLDataSink audioSnk = {&loc_outmix, nullptr};
 
     // create audio player
     const SLInterfaceID ids[3] = {SL_IID_ANDROIDCONFIGURATION, SL_IID_PLAY, SL_IID_BUFFERQUEUE}; //, SL_IID_VOLUME};
@@ -279,6 +281,9 @@ void OpenslPlayer::initOpensl()
     ////	SLint32 streamType = SL_ANDROID_STREAM_VOICE;
     result = (*playerConfig)->SetConfiguration(playerConfig, SL_ANDROID_KEY_STREAM_TYPE, &streamType, sizeof(SLint32));
     throwUnsuccess(kPhaseInit, "PlayerConfig::SetConfiguration", result);
+    // Set the performance mode.
+    SLuint32 performanceMode = SL_ANDROID_PERFORMANCE_NONE;
+    result = (*playerConfig)->SetConfiguration(playerConfig, SL_ANDROID_KEY_PERFORMANCE_MODE, &performanceMode, sizeof(performanceMode));
 
     result = (*bqPlayerObject)->Realize(bqPlayerObject, SL_BOOLEAN_FALSE);
     throwUnsuccess(kPhaseInit, "PlayerObject::Realize", result);
@@ -316,7 +321,7 @@ void OpenslPlayer::uninitOpensl()
     LOG(INFO, LOG_TAG) << "uninitOpensl\n";
     SLresult result;
     LOG(INFO, LOG_TAG) << "OpenSLWrap_Shutdown - stopping playback\n";
-    if (bqPlayerPlay != NULL)
+    if (bqPlayerPlay != nullptr)
     {
         result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_STOPPED);
         if (SL_RESULT_SUCCESS != result)
@@ -325,37 +330,37 @@ void OpenslPlayer::uninitOpensl()
 
     LOG(INFO, LOG_TAG) << "OpenSLWrap_Shutdown - deleting player object\n";
 
-    if (bqPlayerObject != NULL)
+    if (bqPlayerObject != nullptr)
     {
         (*bqPlayerObject)->Destroy(bqPlayerObject);
-        bqPlayerObject = NULL;
-        bqPlayerPlay = NULL;
-        bqPlayerBufferQueue = NULL;
-        bqPlayerVolume = NULL;
+        bqPlayerObject = nullptr;
+        bqPlayerPlay = nullptr;
+        bqPlayerBufferQueue = nullptr;
+        bqPlayerVolume = nullptr;
     }
 
     LOG(INFO, LOG_TAG) << "OpenSLWrap_Shutdown - deleting mix object\n";
 
-    if (outputMixObject != NULL)
+    if (outputMixObject != nullptr)
     {
         (*outputMixObject)->Destroy(outputMixObject);
-        outputMixObject = NULL;
+        outputMixObject = nullptr;
     }
 
     LOG(INFO, LOG_TAG) << "OpenSLWrap_Shutdown - deleting engine object\n";
 
-    if (engineObject != NULL)
+    if (engineObject != nullptr)
     {
         (*engineObject)->Destroy(engineObject);
-        engineObject = NULL;
-        engineEngine = NULL;
+        engineObject = nullptr;
+        engineEngine = nullptr;
     }
 
     delete[] buffer[0];
-    buffer[0] = NULL;
+    buffer[0] = nullptr;
 
     delete[] buffer[1];
-    buffer[1] = NULL;
+    buffer[1] = nullptr;
 
     LOG(INFO, LOG_TAG) << "OpenSLWrap_Shutdown - finished\n";
     active_ = false;
@@ -375,3 +380,5 @@ void OpenslPlayer::stop()
     (*bqPlayerBufferQueue)->Clear(bqPlayerBufferQueue);
     throwUnsuccess(kPhaseStop, "PlayerPlay::SetPlayState", result);
 }
+
+} // namespace player

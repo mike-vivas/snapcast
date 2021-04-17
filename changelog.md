@@ -1,5 +1,79 @@
 # Snapcast changelog
 
+## Version 0.24.0
+
+### Features
+
+- Client: Configurable server for Pulseaudio backend (Issue #779)
+
+### Bugfixes
+
+- Client: Fix dropouts in alsa player backend (Issue #774)
+- Client: Fix alsa player volume resetting to max (Issue #735)  
+- Client: Fix noise while muted for Pulseaudio (Issue #785) 
+- Client: Android support for opus readded (Issue #789)
+- Client: Fix host id for MacBook Pro (later 2016) (Issue #807)
+
+### General
+
+- Snapweb: Update to v0.2.0
+- Remove submodules with external libs from the git repository
+- Write version and revision (git sha) to log 
+- Add documentation to the default files (Issue #791)
+
+_Johannes Pohl <snapcast@badaix.de>  Sat, 27 Feb 2021 00:13:37 +0200_
+
+## Version 0.23.0
+
+### Features
+
+- Client: Add PulseAudio player backend (Issue #722)
+- Client: Configurable buffer time for alsa and pulse players
+- Server: If docroot is not configured, a default page is served (Issue #711)
+- Server: airplay source supports "password" parameter (Issue #754)
+
+### Bugfixes
+
+- Server: airplay source deletes Shairport's meta pipe on exit (Issue #672)
+- Server: alsa source will not send silece when going idle (Issue #729)
+- Server: pipe source will not send silence after 3h idle (Issue #741)
+- Server: Fix build error on FreeBSD (Issue #752)
+- Client: "make install" will set correct user/group for snapclient (Issue #728)
+- Client: Fix printing UTF-8 device names on Windows (Issue #732)
+- Client: Fix stuttering on alsa player backend (Issue #722, #727)
+- Client: Terminate if host is not configured and mDNS is unavailable
+
+### General
+
+- Server: Change librespot parameter "killall" default to false (Issue #746, #724)
+- Client: Android uses performance mode "none" to allow effects (Issue #766)
+- Snapweb: Update to v0.1.0
+- Build: Update CMakeLists.txt to build Snapclient on Android
+
+_Johannes Pohl <snapcast@badaix.de>  Sun, 10 Jan 2021 00:13:37 +0200_
+
+## Version 0.22.0
+
+### Features
+
+- Server: Add Meta stream source (Issue #402, #569, #666)
+- Client: Add file audio backend (Issue #681)
+
+### Bugfixes
+
+- Add missing define for alsa stream to makefile (Issue #692)
+- Fix playback when plugging the headset on Android (Issue #699)
+- Server discards old chunks if not consumed (Issue #708)
+
+### General
+
+- Less verbose logging during pipe reconnects (Issue #696)
+- Add null encoder for streams used only as input for meta streams
+- Snapweb: Change latency range to [-10s, 10s] (Issue #695)
+- Update Snapweb, including PR #11, #12, #13, Issues #16, #17
+
+_Johannes Pohl <snapcast@badaix.de>  Thu, 15 Oct 2020 00:13:37 +0200_
+
 ## Version 0.21.0
 
 ### Features
@@ -20,8 +94,9 @@
 - Reintroduce MACOS define, hopefully not breaking anything on macOS
 - Snapcast uses GitHub actions for automated CI/CD
 - CMake installs man files (Issue #507)
+- Update documentation (Issue #615, #617)
 
-_Johannes Pohl <snapcast@badaix.de>  Sat, 13 Jun 2020 00:13:37 +0200_
+_Johannes Pohl <snapcast@badaix.de>  Sun, 13 Sep 2020 00:13:37 +0200_
 
 ## Version 0.20.0
 

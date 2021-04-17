@@ -54,6 +54,11 @@ Snapcast packages are available for several Linux distributions:
 - [Archlinux](doc/install.md#archlinux)
 - [Void Linux](doc/install.md#void-linux)
 
+### Nightly builds
+
+There are debian packages of automated builds for [armhf](https://github.com/badaix/snapcast/actions?query=workflow%3Aself-hosted) and [amd64](https://github.com/badaix/snapcast/actions?query=workflow%3AUbuntu) available in [Actions](https://github.com/badaix/snapcast/actions).  
+Download and extract the archive for your architecture and follow the [debian installation instructions](doc/install.md#debian).
+
 ### Installation from source
 
 Please follow this [guide](doc/build.md) to build Snapcast for
@@ -83,6 +88,8 @@ Please note that there are no pre-built firmware packages available.
 After installation, Snapserver and Snapclient are started with the command line arguments that are configured in `/etc/default/snapserver` and `/etc/default/snapclient`.
 Allowed options are listed in the man pages (`man snapserver`, `man snapclient`) or by invoking the snapserver or snapclient with the `-h` option.
 
+### Server
+
 The server configuration is done in `/etc/snapserver.conf`. Different audio sources can by configured in the `[stream]` section with a list of `source` options, e.g.:
 
     [stream]
@@ -98,6 +105,26 @@ Available stream sources are:
 - [file](doc/configuration.md#file): read PCM audio from a file
 - [process](doc/configuration.md#process): launches a process and reads audio from stdout
 - [tcp](doc/configuration.md#tcp-server): receives audio from a TCP socket, can act as client or server
+- [meta](doc/configuration.md#meta): read and mix audio from other stream sources
+
+### Client
+
+The client will use as audio backend the system's low level audio API to have the best possible control and most precise timing to achieve perfectly synced playback. 
+
+Available audio backends are configured using the `--player` command line parameter:
+
+| Backend   | OS      | Description  | Parameters |
+| --------- | ------- | ------------ | ---------- |
+| alsa      | Linux   | ALSA | `buffer_time=<total buffer size [ms]>` (default 80, min 10)<br />`fragments=<number of buffers>` (default 4, min 2) |
+| pulse     | Linux   | PulseAudio | `buffer_time=<buffer size [ms]>` (default 100, min 10)<br />`server=<PulseAudio server>` - default not-set: use the default server |
+| oboe      | Android | Oboe, using OpenSL ES on Android 4.1 and AAudio on 8.1 | |
+| opensl    | Android | OpenSL ES | |
+| coreaudio | macOS   | Core Audio | |
+| wasapi    | Windows | Windows Audio Session API | |
+| file      | All     | Write audio to file | `filename=<filename>` (`<filename>` = `stdout`, `stderr`, `null` or a filename)<br />`mode=[w|a]` (`w`: write (discarding the content), `a`: append (keeping the content) |
+
+Parameters are appended to the player name, e.g. `--player alsa:buffer_time=100`. Use `--player <name>:?` to get a list of available options.  
+For some audio backends you can configure the PCM device using the `-s` or `--soundcard` parameter, the device is choosen by index or name. Available PCM devices can be listed with `-l` or `--list`
 
 ## Test
 
@@ -109,7 +136,7 @@ All connected clients should play random noise now. You might raise the client's
 It's also possible to let the server play a WAV file. Simply configure a `file` stream in `/etc/snapserver.conf`, and restart the server:
 
     [stream]
-    stream = file:///home/user/Musik/Some%20wave%20file.wav?name=test
+    source = file:///home/user/Musik/Some%20wave%20file.wav?name=test
 
 When you are using a Raspberry Pi, you might have to change your audio output to the 3.5mm jack:
 
@@ -129,7 +156,13 @@ Snapcast can be controlled using a [JSON-RPC API](doc/json_rpc_api/v2_0_0.md) ov
 - Manage groups
 - ...
 
+### WebApp
+
 The server is shipped with [Snapweb](https://github.com/badaix/snapweb), this WebApp can be reached under `http://<snapserver host>:1780`.
+
+![Snapweb](https://raw.githubusercontent.com/badaix/snapweb/master/snapweb.png)
+
+### Android client
 
 There is an Android client [snapdroid](https://github.com/badaix/snapdroid) available in [Releases](https://github.com/badaix/snapdroid/releases/latest) and on [Google Play](https://play.google.com/store/apps/details?id=de.badaix.snapcast)
 

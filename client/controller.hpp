@@ -16,8 +16,8 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#ifndef CONTROLLER_H
-#define CONTROLLER_H
+#ifndef CONTROLLER_HPP
+#define CONTROLLER_HPP
 
 #include "client_connection.hpp"
 #include "client_settings.hpp"
@@ -46,6 +46,7 @@ public:
     Controller(boost::asio::io_context& io_context, const ClientSettings& settings, std::unique_ptr<MetadataAdapter> meta);
     void start();
     // void stop();
+    static std::vector<std::string> getSupportedPlayerNames();
 
 private:
     using MdnsHandler = std::function<void(const boost::system::error_code& ec, const std::string& host, uint16_t port)>;
@@ -54,7 +55,7 @@ private:
     void browseMdns(const MdnsHandler& handler);
 
     template <typename PlayerType>
-    std::unique_ptr<Player> createPlayer(ClientSettings::Player& settings, const std::string& player_name);
+    std::unique_ptr<player::Player> createPlayer(ClientSettings::Player& settings, const std::string& player_name);
 
     void getNextMessage();
     void sendTimeSyncMessage(int quick_syncs);
@@ -67,7 +68,7 @@ private:
     std::unique_ptr<ClientConnection> clientConnection_;
     std::shared_ptr<Stream> stream_;
     std::unique_ptr<decoder::Decoder> decoder_;
-    std::unique_ptr<Player> player_;
+    std::unique_ptr<player::Player> player_;
     std::unique_ptr<MetadataAdapter> meta_;
     std::unique_ptr<msg::ServerSettings> serverSettings_;
     std::unique_ptr<msg::CodecHeader> headerChunk_;

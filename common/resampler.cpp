@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -18,6 +18,8 @@
 
 #include "resampler.hpp"
 #include "common/aixlog.hpp"
+#include "common/snap_exception.hpp"
+
 #include <cmath>
 
 using namespace std;
@@ -42,9 +44,9 @@ Resampler::Resampler(const SampleFormat& in_format, const SampleFormat& out_form
         soxr_io_spec_t iospec = soxr_io_spec(in_type, out_type);
         // HQ should be fine: http://sox.sourceforge.net/Docs/FAQ
         soxr_quality_spec_t q_spec = soxr_quality_spec(SOXR_HQ, 0);
-        soxr_ =
-            soxr_create(static_cast<double>(in_format_.rate()), static_cast<double>(out_format_.rate()), in_format_.channels(), &error, &iospec, &q_spec, NULL);
-        if (error)
+        soxr_ = soxr_create(static_cast<double>(in_format_.rate()), static_cast<double>(out_format_.rate()), in_format_.channels(), &error, &iospec, &q_spec,
+                            nullptr);
+        if (error != nullptr)
         {
             LOG(ERROR, LOG_TAG) << "Error soxr_create: " << error << "\n";
             soxr_ = nullptr;
@@ -52,8 +54,24 @@ Resampler::Resampler(const SampleFormat& in_format, const SampleFormat& out_form
         // initialize the buffer with 20ms (~latency of the reampler)
         resample_buffer_.resize(out_format_.frameSize() * static_cast<uint16_t>(ceil(out_format_.msRate() * 20)));
     }
+#else
+    LOG(WARNING, LOG_TAG) << "Soxr not available, resampling not supported\n";
+    if ((out_format_.rate() != in_format_.rate()) || (out_format_.bits() != in_format_.bits()))
+    {
+        throw SnapException("Resampling requested, but not supported");
+    }
 #endif
     // resampled_chunk_ = std::make_unique<msg::PcmChunk>(out_format_, 0);
+}
+
+
+bool Resampler::resamplingNeeded() const
+{
+#ifdef HAS_SOXR
+    return soxr_ != nullptr;
+#else
+    return false;
+#endif
 }
 
 
@@ -85,43 +103,44 @@ Resampler::Resampler(const SampleFormat& in_format, const SampleFormat& out_form
 //     // }
 // }
 
-shared_ptr<msg::PcmChunk> Resampler::resample(shared_ptr<msg::PcmChunk> chunk)
+
+std::shared_ptr<msg::PcmChunk> Resampler::resample(const msg::PcmChunk& chunk)
 {
 #ifndef HAS_SOXR
-    return chunk;
+    return std::make_shared<msg::PcmChunk>(chunk);
 #else
-    if (soxr_ == nullptr)
+    if (!resamplingNeeded())
     {
-        return chunk;
+        return std::make_shared<msg::PcmChunk>(chunk);
     }
     else
     {
         if (in_format_.bits() == 24)
         {
             // sox expects 32 bit input, shift 8 bits left
-            int32_t* frames = (int32_t*)chunk->payload;
-            for (size_t n = 0; n < chunk->getSampleCount(); ++n)
+            auto* frames = reinterpret_cast<int32_t*>(chunk.payload);
+            for (size_t n = 0; n < chunk.getSampleCount(); ++n)
                 frames[n] = frames[n] << 8;
         }
 
         size_t idone;
         size_t odone;
         auto resample_buffer_framesize = resample_buffer_.size() / out_format_.frameSize();
-        auto error = soxr_process(soxr_, chunk->payload, chunk->getFrameCount(), &idone, resample_buffer_.data(), resample_buffer_framesize, &odone);
-        if (error)
+        const auto* error = soxr_process(soxr_, chunk.payload, chunk.getFrameCount(), &idone, resample_buffer_.data(), resample_buffer_framesize, &odone);
+        if (error != nullptr)
         {
             LOG(ERROR, LOG_TAG) << "Error soxr_process: " << error << "\n";
         }
         else
         {
-            LOG(TRACE, LOG_TAG) << "Resample idone: " << idone << "/" << chunk->getFrameCount() << ", odone: " << odone << "/"
+            LOG(TRACE, LOG_TAG) << "Resample idone: " << idone << "/" << chunk.getFrameCount() << ", odone: " << odone << "/"
                                 << resample_buffer_.size() / out_format_.frameSize() << ", delay: " << soxr_delay(soxr_) << "\n";
 
             // some data has been resampled (odone frames) and some is still in the pipe (soxr_delay frames)
             if (odone > 0)
             {
                 // get the resampled ts from the input ts
-                auto input_end_ts = chunk->start() + chunk->duration<std::chrono::microseconds>();
+                auto input_end_ts = chunk.start() + chunk.duration<std::chrono::microseconds>();
                 double resampled_ms = (odone + soxr_delay(soxr_)) / out_format_.msRate();
                 auto resampled_start = input_end_ts - std::chrono::microseconds(static_cast<int>(resampled_ms * 1000.));
 
@@ -132,13 +151,13 @@ shared_ptr<msg::PcmChunk> Resampler::resample(shared_ptr<msg::PcmChunk> chunk)
 
                 // copy from the resample_buffer to the resampled chunk
                 resampled_chunk->payloadSize = static_cast<uint32_t>(odone * out_format_.frameSize());
-                resampled_chunk->payload = (char*)realloc(resampled_chunk->payload, resampled_chunk->payloadSize);
+                resampled_chunk->payload = static_cast<char*>(realloc(resampled_chunk->payload, resampled_chunk->payloadSize));
                 memcpy(resampled_chunk->payload, resample_buffer_.data(), resampled_chunk->payloadSize);
 
                 if (out_format_.bits() == 24)
                 {
                     // sox has quantized to 32 bit, shift 8 bits right
-                    int32_t* frames = (int32_t*)resampled_chunk->payload;
+                    auto* frames = reinterpret_cast<int32_t*>(resampled_chunk->payload);
                     for (size_t n = 0; n < resampled_chunk->getSampleCount(); ++n)
                     {
                         // +128 to round to the nearest so that quantisation steps are distributed evenly
@@ -172,10 +191,27 @@ shared_ptr<msg::PcmChunk> Resampler::resample(shared_ptr<msg::PcmChunk> chunk)
 }
 
 
+shared_ptr<msg::PcmChunk> Resampler::resample(shared_ptr<msg::PcmChunk> chunk)
+{
+#ifndef HAS_SOXR
+    return chunk;
+#else
+    if (!resamplingNeeded())
+    {
+        return chunk;
+    }
+    else
+    {
+        return resample(*chunk);
+    }
+#endif
+}
+
+
 Resampler::~Resampler()
 {
 #ifdef HAS_SOXR
-    if (soxr_)
+    if (soxr_ != nullptr)
         soxr_delete(soxr_);
 #endif
 }

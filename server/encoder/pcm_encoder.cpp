@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -24,10 +24,10 @@
 namespace encoder
 {
 
-#define ID_RIFF 0x46464952
-#define ID_WAVE 0x45564157
-#define ID_FMT 0x20746d66
-#define ID_DATA 0x61746164
+static constexpr auto ID_RIFF = 0x46464952;
+static constexpr auto ID_WAVE = 0x45564157;
+static constexpr auto ID_FMT = 0x20746d66;
+static constexpr auto ID_DATA = 0x61746164;
 
 
 namespace
@@ -51,14 +51,14 @@ void PcmEncoder::encode(const msg::PcmChunk& chunk)
 {
     // copy the chunk into a shared_ptr
     auto pcmChunk = std::make_shared<msg::PcmChunk>(chunk);
-    listener_->onChunkEncoded(this, pcmChunk, pcmChunk->durationMs());
+    encoded_callback_(*this, pcmChunk, pcmChunk->durationMs());
 }
 
 
 void PcmEncoder::initEncoder()
 {
     headerChunk_->payloadSize = 44;
-    headerChunk_->payload = (char*)realloc(headerChunk_->payload, headerChunk_->payloadSize);
+    headerChunk_->payload = static_cast<char*>(realloc(headerChunk_->payload, headerChunk_->payloadSize));
     char* payload = headerChunk_->payload;
     assign(payload, SWAP_32(ID_RIFF));
     assign(payload + 4, SWAP_32(36));

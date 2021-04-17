@@ -41,6 +41,9 @@
 
 using namespace std;
 
+namespace player
+{
+
 static constexpr auto LOG_TAG = "Player";
 
 Player::Player(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream)
@@ -68,7 +71,7 @@ Player::Player(boost::asio::io_context& io_context, const ClientSettings::Player
     };
     LOG(INFO, LOG_TAG) << "Player name: " << not_empty(settings_.player_name) << ", device: " << not_empty(settings_.pcm_device.name)
                        << ", description: " << not_empty(settings_.pcm_device.description) << ", idx: " << settings_.pcm_device.idx
-                       << ", sharing mode: " << sharing_mode << "\n";
+                       << ", sharing mode: " << sharing_mode << ", parameters: " << not_empty(settings.parameter) << "\n";
 
     string mixer;
     switch (settings_.mixer.mode)
@@ -107,16 +110,14 @@ void Player::start()
     // If hardware mixer is used, send the initial volume to the server, because this is
     // the volume that is configured by the user on his local device, so we shouldn't change it
     // on client start up
-    if (settings_.mixer.mode == ClientSettings::Mixer::Mode::hardware)
-    {
-        double volume;
-        bool muted;
-        if (getHardwareVolume(volume, muted))
-        {
-            LOG(DEBUG, LOG_TAG) << "Volume: " << volume << ", muted: " << muted << "\n";
-            notifyVolumeChange(volume, muted);
-        }
-    }
+    // if (settings_.mixer.mode == ClientSettings::Mixer::Mode::hardware)
+    // {
+    //     if (getHardwareVolume(volume_, muted_))
+    //     {
+    //         LOG(DEBUG, LOG_TAG) << "Volume: " << volume_ << ", muted: " << muted_ << "\n";
+    //         notifyVolumeChange(volume_, muted_);
+    //     }
+    // }
 }
 
 
@@ -149,7 +150,6 @@ bool Player::getHardwareVolume(double& volume, bool& muted)
     std::ignore = volume;
     std::ignore = muted;
     throw SnapException("Failed to get hardware mixer volume: not supported");
-    return false;
 }
 
 
@@ -203,7 +203,7 @@ void Player::setVolume(double volume, bool mute)
     muted_ = mute;
     if (settings_.mixer.mode == ClientSettings::Mixer::Mode::hardware)
     {
-        setHardwareVolume(volume, muted_);
+        setHardwareVolume(volume, mute);
     }
     else if (settings_.mixer.mode == ClientSettings::Mixer::Mode::software)
     {
@@ -247,3 +247,5 @@ void Player::setVolume(double volume, bool mute)
         }
     }
 }
+
+} // namespace player

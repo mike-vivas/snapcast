@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -68,7 +68,7 @@ void Server::onMetaChanged(const PcmStream* pcmStream)
 }
 
 
-void Server::onStateChanged(const PcmStream* pcmStream, const ReaderState& state)
+void Server::onStateChanged(const PcmStream* pcmStream, ReaderState state)
 {
     // clang-format off
     // Notification: {"jsonrpc":"2.0","method":"Stream.OnUpdate","params":{"id":"stream 1","stream":{"id":"stream 1","status":"idle","uri":{"fragment":"","host":"","path":"/tmp/snapfifo","query":{"chunk_ms":"20","codec":"flac","name":"stream 1","sampleformat":"48000:16:2"},"raw":"pipe:///tmp/snapfifo?name=stream 1","scheme":"pipe"}}}}
@@ -81,9 +81,16 @@ void Server::onStateChanged(const PcmStream* pcmStream, const ReaderState& state
 }
 
 
-void Server::onNewChunk(const PcmStream* pcmStream, std::shared_ptr<msg::PcmChunk> chunk, double duration)
+void Server::onChunkRead(const PcmStream* pcmStream, const msg::PcmChunk& chunk)
 {
-    streamServer_->onNewChunk(pcmStream, pcmStream == streamManager_->getDefaultStream().get(), chunk, duration);
+    std::ignore = pcmStream;
+    std::ignore = chunk;
+}
+
+
+void Server::onChunkEncoded(const PcmStream* pcmStream, std::shared_ptr<msg::PcmChunk> chunk, double duration)
+{
+    streamServer_->onChunkEncoded(pcmStream, pcmStream == streamManager_->getDefaultStream().get(), chunk, duration);
 }
 
 
@@ -243,7 +250,7 @@ void Server::processRequest(const jsonrpcpp::request_ptr request, jsonrpcpp::ent
                 group->muted = muted;
 
                 /// Update clients
-                for (auto client : group->clients)
+                for (const auto& client : group->clients)
                 {
                     session_ptr session = streamServer_->getStreamSession(client->id);
                     if (session != nullptr)
@@ -276,7 +283,7 @@ void Server::processRequest(const jsonrpcpp::request_ptr request, jsonrpcpp::ent
                 group->streamId = streamId;
 
                 // Update clients
-                for (auto client : group->clients)
+                for (const auto& client : group->clients)
                 {
                     session_ptr session = streamServer_->getStreamSession(client->id);
                     if (session && (session->pcmStream() != stream))
@@ -692,9 +699,23 @@ void Server::start()
         streamManager_ =
             std::make_unique<StreamManager>(this, io_context_, settings_.stream.sampleFormat, settings_.stream.codec, settings_.stream.streamChunkMs);
         //	throw SnapException("xxx");
+        // Add normal sources first
         for (const auto& sourceUri : settings_.stream.sources)
         {
-            PcmStreamPtr stream = streamManager_->addStream(sourceUri);
+            StreamUri streamUri(sourceUri);
+            if (streamUri.scheme == "meta")
+                continue;
+            PcmStreamPtr stream = streamManager_->addStream(streamUri);
+            if (stream)
+                LOG(INFO, LOG_TAG) << "Stream: " << stream->getUri().toJson() << "\n";
+        }
+        // Add meta sources second
+        for (const auto& sourceUri : settings_.stream.sources)
+        {
+            StreamUri streamUri(sourceUri);
+            if (streamUri.scheme != "meta")
+                continue;
+            PcmStreamPtr stream = streamManager_->addStream(streamUri);
             if (stream)
                 LOG(INFO, LOG_TAG) << "Stream: " << stream->getUri().toJson() << "\n";
         }

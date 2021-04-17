@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -77,15 +77,16 @@ std::string StreamSessionWebsocket::getIP()
 void StreamSessionWebsocket::sendAsync(const shared_const_buffer& buffer, const WriteHandler& handler)
 {
     LOG(TRACE, LOG_TAG) << "sendAsync: " << buffer.message().type << "\n";
-    ws_.async_write(buffer, boost::asio::bind_executor(strand_, [ self = shared_from_this(), buffer, handler ](boost::system::error_code ec,
-                                                                                                               std::size_t length) { handler(ec, length); }));
+    ws_.async_write(buffer, boost::asio::bind_executor(strand_, [self = shared_from_this(), buffer, handler](boost::system::error_code ec, std::size_t length) {
+                        handler(ec, length);
+                    }));
 }
 
 
 void StreamSessionWebsocket::do_read_ws()
 {
     // Read a message into our buffer
-    ws_.async_read(buffer_, boost::asio::bind_executor(strand_, [ this, self = shared_from_this() ](beast::error_code ec, std::size_t bytes_transferred) {
+    ws_.async_read(buffer_, boost::asio::bind_executor(strand_, [this, self = shared_from_this()](beast::error_code ec, std::size_t bytes_transferred) {
                        on_read_ws(ec, bytes_transferred);
                    }));
 }
@@ -110,7 +111,7 @@ void StreamSessionWebsocket::on_read_ws(beast::error_code ec, std::size_t bytes_
         return;
     }
 
-    auto data = boost::asio::buffer_cast<char*>(buffer_.data());
+    auto* data = boost::asio::buffer_cast<char*>(buffer_.data());
     baseMessage_.deserialize(data);
     LOG(DEBUG, LOG_TAG) << "getNextMessage: " << baseMessage_.type << ", size: " << baseMessage_.size << ", id: " << baseMessage_.id
                         << ", refers: " << baseMessage_.refersTo << "\n";

@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,23 +16,52 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <assert.h>
+#include <cassert>
 #include <iostream>
 
 #include "common/aixlog.hpp"
 #include "common/snap_exception.hpp"
 #include "common/str_compat.hpp"
+#include "common/utils/string_utils.hpp"
 #include "file_player.hpp"
 
 using namespace std;
+
+namespace player
+{
 
 static constexpr auto LOG_TAG = "FilePlayer";
 static constexpr auto kDefaultBuffer = 50ms;
 
 
 FilePlayer::FilePlayer(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream)
-    : Player(io_context, settings, stream), timer_(io_context)
+    : Player(io_context, settings, stream), timer_(io_context), file_(nullptr)
 {
+    auto params = utils::string::split_pairs(settings.parameter, ',', '=');
+    string filename;
+    if (params.find("filename") != params.end())
+        filename = params["filename"];
+
+    if (filename.empty() || (filename == "stdout"))
+    {
+        file_.reset(stdout, [](auto p) { std::ignore = p; });
+    }
+    else if (filename == "stderr")
+    {
+        file_.reset(stderr, [](auto p) { std::ignore = p; });
+    }
+    else if (filename != "null")
+    {
+        std::string mode = "w";
+        if (params.find("mode") != params.end())
+            mode = params["mode"];
+        if ((mode != "w") && (mode != "a"))
+            throw SnapException("Mode must be w (write) or a (append)");
+        mode += "b";
+        file_.reset(fopen(filename.c_str(), mode.c_str()), [](auto p) { fclose(p); });
+        if (!file_)
+            throw SnapException("Error opening file: '" + filename + "', error: " + cpt::to_string(errno));
+    }
 }
 
 
@@ -56,16 +85,21 @@ void FilePlayer::requestAudio()
     if (buffer_.size() < needed)
         buffer_.resize(needed);
 
-    if (!stream_->getPlayerChunk(buffer_.data(), 100ms, numFrames))
+    if (!stream_->getPlayerChunkOrSilence(buffer_.data(), 10ms, numFrames))
     {
         // LOG(INFO, LOG_TAG) << "Failed to get chunk. Playing silence.\n";
-        memset(buffer_.data(), 0, needed);
     }
     else
     {
         adjustVolume(static_cast<char*>(buffer_.data()), numFrames);
     }
-    fwrite(buffer_.data(), 1, needed, stdout);
+
+    if (file_)
+    {
+        fwrite(buffer_.data(), 1, needed, file_.get());
+        fflush(file_.get());
+    }
+
     loop();
 }
 
@@ -98,3 +132,5 @@ void FilePlayer::stop()
     LOG(INFO, LOG_TAG) << "Stop\n";
     timer_.cancel();
 }
+
+} // namespace player

@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -30,6 +30,38 @@ static constexpr auto LOG_TAG = "ControlSessionHTTP";
 
 
 static constexpr const char* HTTP_SERVER_NAME = "Snapcast";
+static constexpr const char* UNCONFIGURED =
+    "<html><head><title>Snapcast Default Page</title></head>"
+    "<body>"
+    "  <h1>Snapcast Default Page</h1>"
+    "  <p>"
+    "    This is the default welcome page used to test the correct operation of the Snapcast built-in webserver."
+    "  </p>"
+    "  <p>"
+    "    This webserver is a websocket endpoint for control clients (ws://<i>host</i>:1780/jsonrpc) and streaming clients"
+    "    (ws://<i>host</i>:1780/stream), but it can also host simple web pages. To serve a web page, you must configure the"
+    "    document root in the snapserver configuration file <b>snapserver.conf</b>, usually located in"
+    "    <b>/etc/snapserver.conf</b>"
+    "  </p>"
+    "  <p>"
+    "    The Snapserver installation should include a copy of <a href=\"https://github.com/badaix/snapweb\">Snapweb</a>,"
+    "    located in <b>/usr/share/snapserver/snapweb/</b><br>"
+    "    To activate it, please configure the <b>doc_root</b> as follows, and restart Snapserver to activate the changes:"
+    "  </p>"
+    "  <pre>"
+    "# HTTP RPC #####################################\n"
+    "#\n"
+    "[http]\n"
+    "\n"
+    "...\n"
+    "\n"
+    "# serve a website from the doc_root location\n"
+    "doc_root = /usr/share/snapserver/snapweb/\n"
+    "\n"
+    "#\n"
+    "################################################</pre>"
+    "</body>"
+    "</html>";
 
 namespace
 {
@@ -120,8 +152,9 @@ ControlSessionHttp::~ControlSessionHttp()
 
 void ControlSessionHttp::start()
 {
-    http::async_read(socket_, buffer_, req_, boost::asio::bind_executor(strand_, [ this, self = shared_from_this() ](
-                                                                                     boost::system::error_code ec, std::size_t bytes) { on_read(ec, bytes); }));
+    http::async_read(
+        socket_, buffer_, req_,
+        boost::asio::bind_executor(strand_, [this, self = shared_from_this()](boost::system::error_code ec, std::size_t bytes) { on_read(ec, bytes); }));
 }
 
 
@@ -151,6 +184,17 @@ void ControlSessionHttp::handle_request(http::request<Body, http::basic_fields<A
         res.set(http::field::content_type, "text/html");
         res.keep_alive(req.keep_alive());
         res.body() = "The resource '" + target.to_string() + "' was not found.";
+        res.prepare_payload();
+        return res;
+    };
+
+    // Returns a configuration help
+    auto const unconfigured = [&req]() {
+        http::response<http::string_body> res{http::status::ok, req.version()};
+        res.set(http::field::server, HTTP_SERVER_NAME);
+        res.set(http::field::content_type, "text/html");
+        res.keep_alive(req.keep_alive());
+        res.body() = UNCONFIGURED;
         res.prepare_payload();
         return res;
     };
@@ -190,13 +234,20 @@ void ControlSessionHttp::handle_request(http::request<Body, http::basic_fields<A
     if (req.target().empty() || req.target()[0] != '/' || req.target().find("..") != beast::string_view::npos)
         return send(bad_request("Illegal request-target"));
 
-    if (settings_.doc_root.empty())
-        return send(not_found(req.target()));
-
     // Build the path to the requested file
     std::string path = path_cat(settings_.doc_root, req.target());
     if (req.target().back() == '/')
         path.append("index.html");
+
+    if (settings_.doc_root.empty())
+    {
+        std::string default_page = "/usr/share/snapserver/index.html";
+        struct stat buffer;
+        if (stat(default_page.c_str(), &buffer) == 0)
+            path = default_page;
+        else
+            return send(unconfigured());
+    }
 
     LOG(DEBUG, LOG_TAG) << "path: " << path << "\n";
     // Attempt to open the file
@@ -263,7 +314,7 @@ void ControlSessionHttp::on_read(beast::error_code ec, std::size_t bytes_transfe
             // Create a WebSocket session by transferring the socket
             // std::make_shared<websocket_session>(std::move(socket_), state_)->run(std::move(req_));
             auto ws = std::make_shared<websocket::stream<beast::tcp_stream>>(std::move(socket_));
-            ws->async_accept(req_, [ this, ws, self = shared_from_this() ](beast::error_code ec) {
+            ws->async_accept(req_, [this, ws, self = shared_from_this()](beast::error_code ec) {
                 if (ec)
                 {
                     LOG(ERROR, LOG_TAG) << "Error during WebSocket handshake (control): " << ec.message() << "\n";
@@ -280,7 +331,7 @@ void ControlSessionHttp::on_read(beast::error_code ec, std::size_t bytes_transfe
             // Create a WebSocket session by transferring the socket
             // std::make_shared<websocket_session>(std::move(socket_), state_)->run(std::move(req_));
             auto ws = std::make_shared<websocket::stream<beast::tcp_stream>>(std::move(socket_));
-            ws->async_accept(req_, [ this, ws, self = shared_from_this() ](beast::error_code ec) {
+            ws->async_accept(req_, [this, ws, self = shared_from_this()](beast::error_code ec) {
                 if (ec)
                 {
                     LOG(ERROR, LOG_TAG) << "Error during WebSocket handshake (stream): " << ec.message() << "\n";
@@ -305,15 +356,17 @@ void ControlSessionHttp::on_read(beast::error_code ec, std::size_t bytes_transfe
 
         // Write the response
         http::async_write(this->socket_, *sp,
-                          boost::asio::bind_executor(strand_, [ this, self = this->shared_from_this(), sp ](beast::error_code ec, std::size_t bytes) {
+                          boost::asio::bind_executor(strand_, [this, self = this->shared_from_this(), sp](beast::error_code ec, std::size_t bytes) {
                               this->on_write(ec, bytes, sp->need_eof());
                           }));
     });
 }
 
 
-void ControlSessionHttp::on_write(beast::error_code ec, std::size_t, bool close)
+void ControlSessionHttp::on_write(beast::error_code ec, std::size_t bytes, bool close)
 {
+    std::ignore = bytes;
+
     // Handle the error, if any
     if (ec)
     {
@@ -335,7 +388,7 @@ void ControlSessionHttp::on_write(beast::error_code ec, std::size_t, bool close)
 
     // Read another request
     http::async_read(socket_, buffer_, req_,
-                     boost::asio::bind_executor(strand_, [ this, self = shared_from_this() ](beast::error_code ec, std::size_t bytes) { on_read(ec, bytes); }));
+                     boost::asio::bind_executor(strand_, [this, self = shared_from_this()](beast::error_code ec, std::size_t bytes) { on_read(ec, bytes); }));
 }
 
 

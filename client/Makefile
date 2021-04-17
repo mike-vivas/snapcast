@@ -14,7 +14,7 @@
 #   You should have received a copy of the GNU General Public License
 #   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-VERSION = 0.21.0
+VERSION = 0.24.0
 BIN = snapclient
 
 ifeq ($(TARGET), FREEBSD)
@@ -42,7 +42,7 @@ ifneq ($(SANITIZE), )
 	LDFLAGS += -fsanitize=$(SANITIZE)
 endif
 
-CXXFLAGS += $(ADD_CFLAGS) -std=c++14 -Wall -Wextra -Wpedantic -Wno-unused-function -DBOOST_ERROR_CODE_HEADER_ONLY -DHAS_FLAC -DHAS_OGG -DHAS_OPUS -DVERSION=\"$(VERSION)\" -I. -I.. -I../common
+CXXFLAGS += $(ADD_CFLAGS) -std=c++14 -Wall -Wextra -Wpedantic -Wno-unused-function -DBOOST_ERROR_CODE_HEADER_ONLY -DHAS_FLAC -DHAS_OGG -DHAS_OPUS -DHAS_SOXR -DVERSION=\"$(VERSION)\" -I. -I.. -I../common
 LDFLAGS  += $(ADD_LDFLAGS) -logg -lFLAC -lopus -lsoxr
 OBJ       = snapclient.o stream.o client_connection.o time_provider.o player/player.o player/file_player.o decoder/pcm_decoder.o decoder/ogg_decoder.o decoder/flac_decoder.o decoder/opus_decoder.o controller.o ../common/sample_format.o ../common/resampler.o
 
@@ -59,34 +59,34 @@ ifeq ($(TARGET), ANDROID)
 
 CXX       = $(PROGRAM_PREFIX)clang++
 CXXFLAGS += -pthread -fPIC -DHAS_TREMOR -DHAS_OPENSL -DHAS_OBOE -I$(TOOLCHAIN)/sysroot/usr/include -I$(TOOLCHAIN)/sysroot/$(NDK_TARGET)/usr/local/include
-LDFLAGS   = -L$(TOOLCHAIN)/sysroot/$(NDK_TARGET)/usr/local/lib -pie -lvorbisidec -logg -lopus -lFLAC -lOpenSLES -loboe -latomic -llog -lsoxr -static-libstdc++
+LDFLAGS   = -L$(TOOLCHAIN)/sysroot/$(NDK_TARGET)/usr/local/lib -pie -lvorbisidec -logg -lFLAC -lopus -lsoxr -lOpenSLES -loboe -latomic -llog -static-libstdc++
 OBJ      += player/opensl_player.o player/oboe_player.o
 
 else ifeq ($(TARGET), OPENWRT)
 
-CXXFLAGS += -pthread -DNO_CPP11_STRING -DHAS_TREMOR -DHAS_ALSA -DHAS_AVAHI -DHAS_DAEMON -DHAS_SOXR
+CXXFLAGS += -pthread -DNO_CPP11_STRING -DHAS_TREMOR -DHAS_ALSA -DHAS_AVAHI -DHAS_DAEMON
 LDFLAGS  += -lasound -lvorbisidec -lavahi-client -lavahi-common -latomic
 OBJ      += ../common/daemon.o player/alsa_player.o browseZeroConf/browse_avahi.o
 
 else ifeq ($(TARGET), BUILDROOT)
 
-CXXFLAGS += -pthread -DNO_CPP11_STRING -DHAS_TREMOR -DHAS_ALSA -DHAS_AVAHI -DHAS_DAEMON -DHAS_SOXR
+CXXFLAGS += -pthread -DNO_CPP11_STRING -DHAS_TREMOR -DHAS_ALSA -DHAS_AVAHI -DHAS_DAEMON
 LDFLAGS  += -lasound -lvorbisidec -lavahi-client -lavahi-common -latomic
 OBJ      += ../common/daemon.o player/alsa_player.o browseZeroConf/browse_avahi.o
 
 else ifeq ($(TARGET), MACOS)
 
 CXX       = g++
-CXXFLAGS += -DHAS_COREAUDIO -DHAS_VORBIS -DFREEBSD -DMACOS -DHAS_BONJOUR -DHAS_DAEMON -DHAS_SOXR -I/usr/local/include -Wno-unused-local-typedef -Wno-deprecated
+CXXFLAGS += -DHAS_COREAUDIO -DHAS_VORBIS -DFREEBSD -DMACOS -DHAS_BONJOUR -DHAS_DAEMON -I/usr/local/include -Wno-unused-local-typedef -Wno-deprecated
 LDFLAGS  += -lvorbis -lFLAC -L/usr/local/lib -framework AudioToolbox -framework CoreAudio -framework CoreFoundation -framework IOKit
 OBJ      += ../common/daemon.o player/coreaudio_player.o browseZeroConf/browse_bonjour.o
 
 else
 
 CXX       = g++
-CXXFLAGS += -pthread -DHAS_VORBIS -DHAS_ALSA -DHAS_AVAHI -DHAS_DAEMON -DHAS_SOXR
-LDFLAGS  += -lrt -lasound -lvorbis -lavahi-client -lavahi-common -latomic
-OBJ      += ../common/daemon.o player/alsa_player.o browseZeroConf/browse_avahi.o
+CXXFLAGS += -pthread -DHAS_VORBIS -DHAS_ALSA -DHAS_PULSE -DHAS_AVAHI -DHAS_DAEMON
+LDFLAGS  += -lrt -lasound -lpulse -lvorbis -lavahi-client -lavahi-common -latomic
+OBJ      += ../common/daemon.o player/alsa_player.o player/pulse_player.o browseZeroConf/browse_avahi.o
 
 endif
 
@@ -178,9 +178,7 @@ installsysv:
 	/etc/init.d/$(BIN) start; \
 
 adduser:
-	@if ! getent passwd snapclient >/dev/null; then \
-		useradd --gid audio --system snapclient; \
-	fi; \
+	sh ../debian/snapclient.postinst configure
 
 ifeq ($(TARGET), MACOS)
 
@@ -227,5 +225,5 @@ uninstallsystemd:
 	systemctl daemon-reload; \
 
 deluser:
-	@userdel --force snapclient > /dev/null || true; \
+	sh ../debian/snapclient.postrm purge
 

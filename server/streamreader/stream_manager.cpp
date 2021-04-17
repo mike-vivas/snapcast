@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -27,6 +27,7 @@
 #include "common/utils.hpp"
 #include "file_stream.hpp"
 #include "librespot_stream.hpp"
+#include "meta_stream.hpp"
 #include "pipe_stream.hpp"
 #include "process_stream.hpp"
 #include "tcp_stream.hpp"
@@ -47,7 +48,12 @@ StreamManager::StreamManager(PcmListener* pcmListener, boost::asio::io_context& 
 PcmStreamPtr StreamManager::addStream(const std::string& uri)
 {
     StreamUri streamUri(uri);
+    return addStream(streamUri);
+}
 
+
+PcmStreamPtr StreamManager::addStream(StreamUri& streamUri)
+{
     if (streamUri.query.find(kUriSampleFormat) == streamUri.query.end())
         streamUri.query[kUriSampleFormat] = sampleFormat_;
 
@@ -102,6 +108,10 @@ PcmStreamPtr StreamManager::addStream(const std::string& uri)
     {
         stream = make_shared<TcpStream>(pcmListener_, ioc_, streamUri);
     }
+    else if (streamUri.scheme == "meta")
+    {
+        stream = make_shared<MetaStream>(pcmListener_, streams_, ioc_, streamUri);
+    }
     else
     {
         throw SnapException("Unknown stream type: " + streamUri.scheme);
@@ -143,7 +153,12 @@ const PcmStreamPtr StreamManager::getDefaultStream()
     if (streams_.empty())
         return nullptr;
 
-    return streams_.front();
+    for (const auto& stream : streams_)
+    {
+        if (stream->getCodec() != "null")
+            return stream;
+    }
+    return nullptr;
 }
 
 
@@ -160,15 +175,26 @@ const PcmStreamPtr StreamManager::getStream(const std::string& id)
 
 void StreamManager::start()
 {
+    // Start meta streams first
     for (const auto& stream : streams_)
-        stream->start();
+        if (stream->getUri().scheme == "meta")
+            stream->start();
+    // Start normal streams second
+    for (const auto& stream : streams_)
+        if (stream->getUri().scheme != "meta")
+            stream->start();
 }
 
 
 void StreamManager::stop()
 {
+    // Stop normal streams first
     for (const auto& stream : streams_)
-        if (stream)
+        if (stream && (stream->getUri().scheme != "meta"))
+            stream->stop();
+    // Stop meta streams second
+    for (const auto& stream : streams_)
+        if (stream && (stream->getUri().scheme == "meta"))
             stream->stop();
 }
 
@@ -176,8 +202,9 @@ void StreamManager::stop()
 json StreamManager::toJson() const
 {
     json result = json::array();
-    for (auto stream : streams_)
-        result.push_back(stream->toJson());
+    for (const auto& stream : streams_)
+        if (stream->getCodec() != "null")
+            result.push_back(stream->toJson());
     return result;
 }
 

@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -69,6 +69,8 @@ AlsaStream::AlsaStream(PcmListener* pcmListener, boost::asio::io_context& ioc, c
     : PcmStream(pcmListener, ioc, uri), handle_(nullptr), read_timer_(ioc), silence_(0ms)
 {
     device_ = uri_.getQuery("device", "hw:0");
+    send_silence_ = (uri_.getQuery("send_silence", "false") == "true");
+    idle_threshold_ = std::chrono::milliseconds(std::max(cpt::stoi(uri_.getQuery("idle_threshold", "100")), 10));
     LOG(DEBUG, LOG_TAG) << "Device: " << device_ << "\n";
 }
 
@@ -76,19 +78,18 @@ AlsaStream::AlsaStream(PcmListener* pcmListener, boost::asio::io_context& ioc, c
 void AlsaStream::start()
 {
     LOG(DEBUG, LOG_TAG) << "Start, sampleformat: " << sampleFormat_.toString() << "\n";
-    encoder_->init(this, sampleFormat_);
 
     // idle_bytes_ = 0;
     // max_idle_bytes_ = sampleFormat_.rate() * sampleFormat_.frameSize() * dryout_ms_ / 1000;
 
+    initAlsa();
     chunk_ = std::make_unique<msg::PcmChunk>(sampleFormat_, chunk_ms_);
     silent_chunk_ = std::vector<char>(chunk_->payloadSize, 0);
     LOG(DEBUG, LOG_TAG) << "Chunk duration: " << chunk_->durationMs() << " ms, frames: " << chunk_->getFrameCount() << ", size: " << chunk_->payloadSize
                         << "\n";
     first_ = true;
     tvEncodedChunk_ = std::chrono::steady_clock::now();
-    initAlsa();
-    active_ = true;
+    PcmStream::start();
     // wait(read_timer_, std::chrono::milliseconds(chunk_ms_), [this] { do_read(); });
     do_read();
 }
@@ -133,8 +134,14 @@ void AlsaStream::initAlsa()
     if ((err = snd_pcm_hw_params_set_format(handle_, hw_params, snd_pcm_format)) < 0)
         throw SnapException("Can't set sample format: " + string(snd_strerror(err)));
 
-    if ((err = snd_pcm_hw_params_set_rate_near(handle_, hw_params, &rate, 0)) < 0)
+    if ((err = snd_pcm_hw_params_set_rate_near(handle_, hw_params, &rate, nullptr)) < 0)
         throw SnapException("Can't set rate: " + string(snd_strerror(err)));
+
+    if (rate != sampleFormat_.rate())
+    {
+        LOG(WARNING, LOG_TAG) << "Rate is not accurate (requested: " << sampleFormat_.rate() << ", got: " << rate << "), using: " << rate << "\n";
+        sampleFormat_.setFormat(rate, sampleFormat_.bits(), sampleFormat_.channels());
+    }
 
     if ((err = snd_pcm_hw_params_set_channels(handle_, hw_params, sampleFormat_.channels())) < 0)
         throw SnapException("Can't set channel count: " + string(snd_strerror(err)));
@@ -151,7 +158,7 @@ void AlsaStream::initAlsa()
 
 void AlsaStream::uninitAlsa()
 {
-    if (handle_)
+    if (handle_ != nullptr)
     {
         snd_pcm_close(handle_);
         handle_ = nullptr;
@@ -206,7 +213,7 @@ void AlsaStream::do_read()
         if (std::memcmp(chunk_->payload, silent_chunk_.data(), silent_chunk_.size()) == 0)
         {
             silence_ += chunk_->duration<std::chrono::microseconds>();
-            if (silence_ > 100ms)
+            if (silence_ > idle_threshold_)
             {
                 setState(ReaderState::kIdle);
             }
@@ -214,6 +221,8 @@ void AlsaStream::do_read()
         else
         {
             silence_ = 0ms;
+            if ((state_ == ReaderState::kIdle) && !send_silence_)
+                first_ = true;
             setState(ReaderState::kPlaying);
         }
 
@@ -225,7 +234,10 @@ void AlsaStream::do_read()
             tvEncodedChunk_ = std::chrono::steady_clock::now() - duration;
         }
 
-        onChunkRead(*chunk_);
+        if ((state_ == ReaderState::kPlaying) || ((state_ == ReaderState::kIdle) && send_silence_))
+        {
+            chunkRead(*chunk_);
+        }
 
         nextTick_ += duration;
         auto currentTick = std::chrono::steady_clock::now();
@@ -246,7 +258,7 @@ void AlsaStream::do_read()
         else
         {
             // reading chunk_ms_ took longer than chunk_ms_
-            pcmListener_->onResync(this, std::chrono::duration_cast<std::chrono::milliseconds>(-next_read).count());
+            resync(-next_read);
             first_ = true;
             wait(read_timer_, nextTick_ - currentTick, [this] { do_read(); });
         }

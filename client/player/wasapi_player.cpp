@@ -20,6 +20,9 @@ using namespace std;
 using namespace std::chrono;
 using namespace std::chrono_literals;
 
+namespace player
+{
+
 static constexpr auto LOG_TAG = "WASAPI";
 
 template <typename T>
@@ -102,8 +105,10 @@ inline PcmDevice convertToDevice(int idx, IMMDevicePtr& device)
     CHECK_HR(hr);
 
     desc.idx = idx;
-    desc.name = wstring_convert<codecvt_utf8<wchar_t>, wchar_t>().to_bytes(id);
-    desc.description = wstring_convert<codecvt_utf8<wchar_t>, wchar_t>().to_bytes(deviceName.pwszVal);
+
+    using converter = wstring_convert<codecvt_utf8_utf16<wchar_t>, wchar_t>;
+    desc.name = converter{}.to_bytes(id);
+    desc.description = converter{}.to_bytes(deviceName.pwszVal);
 
     CoTaskMemFree(id);
 
@@ -140,7 +145,7 @@ vector<PcmDevice> WASAPIPlayer::pcm_list()
         CHECK_HR(hr);
 
         auto dev = convertToDevice(0, defaultDevice);
-        dev.name = "default";
+        dev.name = DEFAULT_DEVICE;
         deviceList.push_back(dev);
     }
 
@@ -156,6 +161,8 @@ vector<PcmDevice> WASAPIPlayer::pcm_list()
     return deviceList;
 }
 
+#pragma warning(push)
+#pragma warning(disable : 4127)
 void WASAPIPlayer::worker()
 {
     assert(sizeof(char) == sizeof(BYTE));
@@ -396,6 +403,7 @@ void WASAPIPlayer::worker()
         }
     }
 }
+#pragma warning(pop)
 
 HRESULT STDMETHODCALLTYPE AudioSessionEventListener::QueryInterface(REFIID riid, VOID** ppvInterface)
 {
@@ -419,6 +427,7 @@ HRESULT STDMETHODCALLTYPE AudioSessionEventListener::QueryInterface(REFIID riid,
 
 HRESULT STDMETHODCALLTYPE AudioSessionEventListener::OnSimpleVolumeChanged(float NewVolume, BOOL NewMute, LPCGUID EventContext)
 {
+    std::ignore = EventContext;
     volume_ = NewVolume;
     muted_ = NewMute;
 
@@ -503,3 +512,5 @@ HRESULT STDMETHODCALLTYPE AudioEndpointVolumeCallback::OnNotify(PAUDIO_VOLUME_NO
 
     return S_OK;
 }
+
+} // namespace player

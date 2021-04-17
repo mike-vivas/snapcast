@@ -61,7 +61,7 @@ public:
     /// @param value the response message
     void setValue(std::unique_ptr<msg::BaseMessage> value)
     {
-        boost::asio::post(strand_, [ this, self = shared_from_this(), val = std::move(value) ]() mutable {
+        boost::asio::post(strand_, [this, self = shared_from_this(), val = std::move(value)]() mutable {
             timer_.cancel();
             if (handler_)
                 handler_({}, std::move(val));
@@ -79,7 +79,7 @@ public:
     void startTimer(const chronos::usec& timeout)
     {
         timer_.expires_after(timeout);
-        timer_.async_wait(boost::asio::bind_executor(strand_, [ this, self = shared_from_this() ](boost::system::error_code ec) {
+        timer_.async_wait(boost::asio::bind_executor(strand_, [this, self = shared_from_this()](boost::system::error_code ec) {
             if (!handler_)
                 return;
             if (!ec)
@@ -153,8 +153,10 @@ public:
         sendRequest(message, timeout, [handler](const boost::system::error_code& ec, std::unique_ptr<msg::BaseMessage> response) {
             if (ec)
                 handler(ec, nullptr);
+            else if (auto casted_response = msg::message_cast<Message>(std::move(response)))
+                handler(ec, std::move(casted_response));
             else
-                handler(ec, msg::message_cast<Message>(std::move(response)));
+                handler(boost::system::errc::make_error_code(boost::system::errc::bad_message), nullptr);
         });
     }
 

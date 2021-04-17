@@ -26,6 +26,9 @@
 
 using namespace std;
 
+namespace player
+{
+
 static constexpr auto LOG_TAG = "OboePlayer";
 static constexpr double kDefaultLatency = 50;
 
@@ -45,38 +48,11 @@ OboePlayer::OboePlayer(boost::asio::io_context& io_context, const ClientSettings
     LOG(INFO, LOG_TAG) << "DefaultStreamValues::SampleRate: " << oboe::DefaultStreamValues::SampleRate
                        << ", DefaultStreamValues::FramesPerBurst: " << oboe::DefaultStreamValues::FramesPerBurst << "\n";
 
-    oboe::SharingMode sharing_mode = oboe::SharingMode::Shared;
-    if (settings.sharing_mode == ClientSettings::SharingMode::exclusive)
-        sharing_mode = oboe::SharingMode::Exclusive;
 
-    // The builder set methods can be chained for convenience.
-    oboe::AudioStreamBuilder builder;
-    auto result = builder.setSharingMode(sharing_mode)
-                      ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
-                      ->setChannelCount(stream->getFormat().channels())
-                      ->setSampleRate(stream->getFormat().rate())
-                      ->setFormat(oboe::AudioFormat::I16)
-                      ->setCallback(this)
-                      ->setDirection(oboe::Direction::Output)
-                      //->setFramesPerCallback((8 * stream->getFormat().rate) / 1000)
-                      //->setFramesPerCallback(2 * oboe::DefaultStreamValues::FramesPerBurst)
-                      //->setFramesPerCallback(960) // 2*192)
-                      ->openStream(out_stream_);
+    auto result = openStream();
     LOG(INFO, LOG_TAG) << "BufferSizeInFrames: " << out_stream_->getBufferSizeInFrames() << ", FramesPerBurst: " << out_stream_->getFramesPerBurst() << "\n";
     if (result != oboe::Result::OK)
         LOG(ERROR, LOG_TAG) << "Error building AudioStream: " << oboe::convertToText(result) << "\n";
-
-    if (out_stream_->getAudioApi() == oboe::AudioApi::AAudio)
-    {
-        LOG(INFO, LOG_TAG) << "AudioApi: AAudio\n";
-        // mLatencyTuner = std::make_unique<oboe::LatencyTuner>(*out_stream_);
-        mLatencyTuner = nullptr;
-    }
-    else
-    {
-        LOG(INFO, LOG_TAG) << "AudioApi: OpenSL\n";
-        out_stream_->setBufferSizeInFrames(4 * out_stream_->getFramesPerBurst());
-    }
     LOG(INFO, LOG_TAG) << "Init done\n";
 }
 
@@ -91,6 +67,43 @@ OboePlayer::~OboePlayer()
     result = out_stream_->close();
     if (result != oboe::Result::OK)
         LOG(ERROR, LOG_TAG) << "Error in AudioStream::stop: " << oboe::convertToText(result) << "\n";
+}
+
+
+oboe::Result OboePlayer::openStream()
+{
+    oboe::SharingMode sharing_mode = oboe::SharingMode::Shared;
+    if (settings_.sharing_mode == ClientSettings::SharingMode::exclusive)
+        sharing_mode = oboe::SharingMode::Exclusive;
+
+    // The builder set methods can be chained for convenience.
+    oboe::AudioStreamBuilder builder;
+    auto result = builder.setSharingMode(sharing_mode)
+                      ->setPerformanceMode(oboe::PerformanceMode::None)
+                      ->setChannelCount(stream_->getFormat().channels())
+                      ->setSampleRate(stream_->getFormat().rate())
+                      ->setFormat(oboe::AudioFormat::I16)
+                      ->setDataCallback(this)
+                      ->setErrorCallback(this)
+                      ->setDirection(oboe::Direction::Output)
+                      //->setFramesPerCallback((8 * stream->getFormat().rate) / 1000)
+                      //->setFramesPerCallback(2 * oboe::DefaultStreamValues::FramesPerBurst)
+                      //->setFramesPerCallback(960) // 2*192)
+                      ->openStream(out_stream_);
+
+    if (out_stream_->getAudioApi() == oboe::AudioApi::AAudio)
+    {
+        LOG(INFO, LOG_TAG) << "AudioApi: AAudio\n";
+        // mLatencyTuner = std::make_unique<oboe::LatencyTuner>(*out_stream_);
+        mLatencyTuner = nullptr;
+    }
+    else
+    {
+        LOG(INFO, LOG_TAG) << "AudioApi: OpenSL\n";
+        out_stream_->setBufferSizeInFrames(4 * out_stream_->getFramesPerBurst());
+    }
+
+    return result;
 }
 
 
@@ -139,10 +152,9 @@ oboe::DataCallbackResult OboePlayer::onAudioReady(oboe::AudioStream* /*oboeStrea
     // LOG(INFO, LOG_TAG) << "getCurrentOutputLatencyMillis: " << output_latency << ", frames: " << numFrames << "\n";
     chronos::usec delay(static_cast<int>(output_latency * 1000.));
 
-    if (!stream_->getPlayerChunk(audioData, delay, numFrames))
+    if (!stream_->getPlayerChunkOrSilence(audioData, delay, numFrames))
     {
         // LOG(INFO, LOG_TAG) << "Failed to get chunk. Playing silence.\n";
-        memset(audioData, 0, numFrames * stream_->getFormat().frameSize());
     }
     else
     {
@@ -150,6 +162,27 @@ oboe::DataCallbackResult OboePlayer::onAudioReady(oboe::AudioStream* /*oboeStrea
     }
 
     return oboe::DataCallbackResult::Continue;
+}
+
+
+void OboePlayer::onErrorBeforeClose(oboe::AudioStream* oboeStream, oboe::Result error)
+{
+    std::ignore = oboeStream;
+    LOG(INFO, LOG_TAG) << "onErrorBeforeClose: " << oboe::convertToText(error) << "\n";
+    stop();
+}
+
+
+void OboePlayer::onErrorAfterClose(oboe::AudioStream* oboeStream, oboe::Result error)
+{
+    // Tech Note: Disconnected Streams and Plugin Issues
+    // https://github.com/google/oboe/blob/master/docs/notes/disconnect.md
+    std::ignore = oboeStream;
+    LOG(INFO, LOG_TAG) << "onErrorAfterClose: " << oboe::convertToText(error) << "\n";
+    auto result = openStream();
+    if (result != oboe::Result::OK)
+        LOG(ERROR, LOG_TAG) << "Error building AudioStream: " << oboe::convertToText(result) << "\n";
+    start();
 }
 
 
@@ -170,3 +203,5 @@ void OboePlayer::stop()
     if (result != oboe::Result::OK)
         LOG(ERROR, LOG_TAG) << "Error in requestStop: " << oboe::convertToText(result) << "\n";
 }
+
+} // namespace player

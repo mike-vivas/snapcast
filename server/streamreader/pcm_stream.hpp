@@ -30,6 +30,7 @@
 #include <condition_variable>
 #include <map>
 #include <string>
+#include <vector>
 
 
 namespace streamreader
@@ -60,8 +61,9 @@ class PcmListener
 {
 public:
     virtual void onMetaChanged(const PcmStream* pcmStream) = 0;
-    virtual void onStateChanged(const PcmStream* pcmStream, const ReaderState& state) = 0;
-    virtual void onNewChunk(const PcmStream* pcmStream, std::shared_ptr<msg::PcmChunk> chunk, double duration) = 0;
+    virtual void onStateChanged(const PcmStream* pcmStream, ReaderState state) = 0;
+    virtual void onChunkRead(const PcmStream* pcmStream, const msg::PcmChunk& chunk) = 0;
+    virtual void onChunkEncoded(const PcmStream* pcmStream, std::shared_ptr<msg::PcmChunk> chunk, double duration) = 0;
     virtual void onResync(const PcmStream* pcmStream, double ms) = 0;
 };
 
@@ -72,7 +74,7 @@ public:
  * Implements EncoderListener to get the encoded data.
  * Data is passed to the PcmListener
  */
-class PcmStream : public encoder::EncoderListener
+class PcmStream
 {
 public:
     /// ctor. Encoded PCM data is passed to the PcmListener
@@ -82,14 +84,13 @@ public:
     virtual void start();
     virtual void stop();
 
-    /// Implementation of EncoderListener::onChunkEncoded
-    void onChunkEncoded(const encoder::Encoder* encoder, std::shared_ptr<msg::PcmChunk> chunk, double duration) override;
     virtual std::shared_ptr<msg::CodecHeader> getHeader();
 
     virtual const StreamUri& getUri() const;
     virtual const std::string& getName() const;
     virtual const std::string& getId() const;
     virtual const SampleFormat& getSampleFormat() const;
+    virtual std::string getCodec() const;
 
     std::shared_ptr<msg::StreamTags> getMeta() const;
     void setMeta(const json& j);
@@ -97,15 +98,18 @@ public:
     virtual ReaderState getState() const;
     virtual json toJson() const;
 
+    void addListener(PcmListener* pcmListener);
 
 protected:
     std::atomic<bool> active_;
 
-    void setState(const ReaderState& newState);
-    virtual void onChunkRead(const msg::PcmChunk& chunk);
+    void setState(ReaderState newState);
+    void chunkRead(const msg::PcmChunk& chunk);
+    void resync(const std::chrono::nanoseconds& duration);
+    void chunkEncoded(const encoder::Encoder& encoder, std::shared_ptr<msg::PcmChunk> chunk, double duration);
 
     std::chrono::time_point<std::chrono::steady_clock> tvEncodedChunk_;
-    PcmListener* pcmListener_;
+    std::vector<PcmListener*> pcmListeners_;
     StreamUri uri_;
     SampleFormat sampleFormat_;
     size_t chunk_ms_;

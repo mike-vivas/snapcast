@@ -24,14 +24,16 @@
 
 #include "player.hpp"
 
-typedef int (*AndroidAudioCallback)(short* buffer, int num_samples);
+namespace player
+{
 
+static constexpr auto OBOE = "oboe";
 
-/// OpenSL Audio Player
+/// Android Oboe Audio Player
 /**
- * Player implementation for Oboe
+ * Player implementation for Android Oboe
  */
-class OboePlayer : public Player, public oboe::AudioStreamCallback
+class OboePlayer : public Player, public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback
 {
 public:
     OboePlayer(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream);
@@ -41,7 +43,15 @@ public:
     void stop() override;
 
 protected:
+    // AudioStreamDataCallback overrides
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream* oboeStream, void* audioData, int32_t numFrames) override;
+
+    // AudioStreamErrorCallback overrides
+    void onErrorBeforeClose(oboe::AudioStream* oboeStream, oboe::Result error) override;
+    void onErrorAfterClose(oboe::AudioStream* oboeStream, oboe::Result error) override;
+
+protected:
+    oboe::Result openStream();
     double getCurrentOutputLatencyMillis() const;
 
     bool needsThread() const override;
@@ -50,5 +60,6 @@ protected:
     std::unique_ptr<oboe::LatencyTuner> mLatencyTuner;
 };
 
+} // namespace player
 
 #endif

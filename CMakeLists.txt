@@ -1,12 +1,63 @@
 cmake_minimum_required(VERSION 3.2)
 
-project(snapcast LANGUAGES CXX VERSION 0.21.0)
+project(snapcast LANGUAGES CXX VERSION 0.24.0)
 set(PROJECT_DESCRIPTION "Multiroom client-server audio player")
 set(PROJECT_URL "https://github.com/badaix/snapcast")
 
 option(BUILD_SHARED_LIBS "Build snapcast in a shared context" ON)
 option(BUILD_STATIC_LIBS "Build snapcast in a static context" ON)
 option(BUILD_TESTS "Build tests (run tests with make test)" ON)
+option(WERROR "Treat warnings as errors" OFF)
+
+option(ASAN "Enable AddressSanitizer" OFF)
+option(TSAN "Enable ThreadSanitizer" OFF)
+option(UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+
+option(TIDY "Enable clang tidy" OFF)
+
+IF (REVISION)
+    # add_compile_definitions(REVISION=\"${REVISION}\")
+    add_definitions(-DREVISION=\"${REVISION}\")
+ENDIF()
+
+IF (TIDY)
+    FIND_PROGRAM(CLANG_TIDY "clang-tidy")
+    IF(CLANG_TIDY)
+        set(CMAKE_CXX_CLANG_TIDY "clang-tidy;-checks=*,-readability-braces-around-statements,-hicpp-braces-around-statements,-google-readability-braces-around-statements,-hicpp-no-array-decay,-fuchsia-default-arguments-calls,-modernize-use-trailing-return-type,-cppcoreguidelines-pro-bounds-array-to-pointer-decay,-cppcoreguidelines-avoid-magic-numbers,-readability-magic-numbers,-bugprone-lambda-function-name,-hicpp-signed-bitwise,-cert-err60-cpp,-cppcoreguidelines-pro-type-reinterpret-cast,-cppcoreguidelines-pro-bounds-pointer-arithmetic")
+    ENDIF()
+ENDIF()
+
+if (MSVC)
+    # warning level 4 and all warnings as errors
+    # warning C4505: 'getArch': unreferenced local function has been removed
+    # warning C4458: declaration of 'size' hides class member
+    # warning C4459: declaration of 'query' hides global declaration
+    add_compile_options(/W4 /wd4458 /wd4459 /wd4505)
+    if (WERROR)
+        add_compile_options(/WX)
+    endif()
+else()
+    # lots of warnings and all warnings as errors
+    add_compile_options(-Wall -Wextra -pedantic -Wno-unused-function)
+    if (WERROR)
+        add_compile_options(-Werror)
+    endif()
+
+    if (ASAN)
+        add_compile_options(-fsanitize=address)
+        add_link_options(-fsanitize=address)
+    endif()
+
+    if (TSAN)
+        add_compile_options(-fsanitize=thread)
+        add_link_options(-fsanitize=thread)
+    endif()
+
+    if (UBSAN)
+        add_compile_options(-fsanitize=undefined)
+        add_link_options(-fsanitize=undefined)
+    endif()
+endif()
 
 include(GNUInstallDirs)
 
@@ -22,7 +73,7 @@ option(BUILD_WITH_TREMOR "Build with vorbis using TREMOR" ON)
 option(BUILD_WITH_OPUS "Build with OPUS support" ON)
 option(BUILD_WITH_AVAHI "Build with AVAHI support" ON)
 option(BUILD_WITH_EXPAT "Build with EXPAT support" ON)
-
+option(BUILD_WITH_PULSE "Build with PulseAudio support" ON)
 
 if (NOT BUILD_SHARED_LIBS AND NOT BUILD_STATIC_LIBS)
     message(FATAL_ERROR "One or both of BUILD_SHARED_LIBS or BUILD_STATIC_LIBS must be set to ON to build")
@@ -41,7 +92,6 @@ elseif (${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
     endif()
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Android")
     set (ANDROID TRUE)
-    add_definitions("-DASIO_DISABLE_STD_FUTURE")
     if (BUILD_SERVER)
         message(FATAL_ERROR "Snapserver not yet supported for Android, use \"-DBUILD_SERVER=OFF\"")
     endif()
@@ -69,9 +119,11 @@ set(INCLUDE_DIRS
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
 add_definitions(-DVERSION="${PROJECT_VERSION}")
 
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+if(NOT ANDROID)
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+endif()
 
 # Configure compiler options
 set(CMAKE_CXX_STANDARD 14)
@@ -112,7 +164,7 @@ if(NOT HAS_CXX11_STRING_SUPPORT)
 endif()
 
 
-if(NOT WIN32)
+if(NOT WIN32 AND NOT ANDROID)
 
     if(MACOSX)
         set(BONJOUR_FOUND true)
@@ -123,14 +175,19 @@ if(NOT WIN32)
         add_definitions(-DFREEBSD -DMACOS -DHAS_DAEMON)
         link_directories("/usr/local/lib")
         list(APPEND INCLUDE_DIRS "/usr/local/include")
-    elseif(ANDROID)
-    #    add_definitions("-DNO_CPP11_STRING")
     else()
 
         pkg_search_module(ALSA REQUIRED alsa)
         if (ALSA_FOUND)
             add_definitions(-DHAS_ALSA)
         endif (ALSA_FOUND)
+
+        if(BUILD_WITH_PULSE)
+            pkg_search_module(PULSE libpulse)
+            if (PULSE_FOUND)
+                add_definitions(-DHAS_PULSE)
+            endif (PULSE_FOUND)
+        endif(BUILD_WITH_PULSE)
 
         if(BUILD_WITH_AVAHI)
             pkg_search_module(AVAHI avahi-client)
@@ -221,7 +278,26 @@ if(NOT WIN32)
     endif()
 endif()
 
-find_package(Boost 1.70 REQUIRED)
+if(NOT ANDROID)
+    find_package(Boost 1.70 REQUIRED)
+else()
+    find_package(oboe REQUIRED CONFIG)
+    find_package(flac REQUIRED CONFIG)
+    find_package(ogg REQUIRED CONFIG)
+    find_package(opus REQUIRED CONFIG)
+    find_package(soxr REQUIRED CONFIG)
+    find_package(tremor REQUIRED CONFIG)
+    find_package(boost REQUIRED CONFIG)
+
+    add_definitions("-DHAS_OBOE")
+    add_definitions("-DHAS_OPENSL")
+    add_definitions("-DHAS_FLAC")
+    add_definitions("-DHAS_OGG")
+    add_definitions("-DHAS_OPUS")
+    add_definitions("-DHAS_SOXR")
+    add_definitions("-DHAS_TREMOR")
+endif()
+
 add_definitions("-DBOOST_ERROR_CODE_HEADER_ONLY")
 
 if(WIN32)
@@ -275,7 +351,9 @@ IF(CLANG_FORMAT)
         client/*.[ch]pp
         server/*.[ch]pp
     )
-    
+
+    list(REMOVE_ITEM CHECK_CXX_SOURCE_FILES "${CMAKE_SOURCE_DIR}/common/json.hpp")
+
     ADD_CUSTOM_TARGET(
         reformat
         COMMAND
@@ -286,3 +364,4 @@ IF(CLANG_FORMAT)
         COMMENT "Auto formatting of all source files"
     )
 ENDIF()
+

@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,6 +21,7 @@
 #include "common/aixlog.hpp"
 #include "common/snap_exception.hpp"
 #include "common/utils.hpp"
+#include "common/utils/file_utils.hpp"
 #include "common/utils/string_utils.hpp"
 
 using namespace std;
@@ -32,12 +33,12 @@ static constexpr auto LOG_TAG = "AirplayStream";
 
 namespace
 {
-string hex2str(string input)
+string hex2str(const string& input)
 {
-    typedef unsigned char byte;
+    using byte = unsigned char;
     unsigned long x = strtoul(input.c_str(), nullptr, 16);
     byte a[] = {byte(x >> 24), byte(x >> 16), byte(x >> 8), byte(x), 0};
-    return string((char*)a);
+    return string(reinterpret_cast<char*>(a));
 }
 } // namespace
 
@@ -52,7 +53,13 @@ AirplayStream::AirplayStream(PcmListener* pcmListener, boost::asio::io_context& 
     logStderr_ = true;
 
     string devicename = uri_.getQuery("devicename", "Snapcast");
-    params_wo_port_ = "\"--name=" + devicename + "\" --output=stdout --use-stderr --get-coverart";
+    string password = uri_.getQuery("password", "");
+
+    params_wo_port_ = "--name=\"" + devicename + "\" --output=stdout --use-stderr --get-coverart";
+    if (!password.empty())
+        params_wo_port_ += " --password \"" + password + "\"";
+    if (!params_.empty())
+        params_wo_port_ += " " + params_;
 
     port_ = cpt::stoul(uri_.getQuery("port", "5000"));
     setParamsAndPipePathFromPort();
@@ -81,11 +88,11 @@ AirplayStream::~AirplayStream()
 }
 
 #ifdef HAS_EXPAT
-int AirplayStream::parse(string line)
+int AirplayStream::parse(const string& line)
 {
     enum XML_Status result;
 
-    if ((result = XML_Parse(parser_, line.c_str(), line.length(), false)) == XML_STATUS_ERROR)
+    if ((result = XML_Parse(parser_, line.c_str(), line.length(), 0)) == XML_STATUS_ERROR)
     {
         XML_ParserFree(parser_);
         createParser();
@@ -209,6 +216,15 @@ void AirplayStream::do_connect()
 }
 
 
+void AirplayStream::do_disconnect()
+{
+    ProcessStream::do_disconnect();
+    // Shairpot-sync created but does not remove the pipe
+    if (utils::file::exists(pipePath_) && (remove(pipePath_.c_str()) != 0))
+        LOG(INFO, LOG_TAG) << "Failed to remove metadata pipe \"" << pipePath_ << "\": " << errno << "\n";
+}
+
+
 void AirplayStream::pipeReadLine()
 {
     if (!pipe_fd_ || !pipe_fd_->is_open())
@@ -236,8 +252,7 @@ void AirplayStream::pipeReadLine()
             {
                 // For some reason, EOF is returned until the first metadata is written to the pipe.
                 // If shairport-sync has not finished setting up the pipe, bad file descriptor is returned.
-                LOG(INFO, LOG_TAG) << "Waiting for metadata, retrying in 2500ms"
-                                   << "\n";
+                LOG(INFO, LOG_TAG) << "Waiting for metadata, retrying in 2500ms\n";
                 wait(pipe_open_timer_, 2500ms, [this] { pipeReadLine(); });
             }
             else
@@ -273,10 +288,10 @@ void AirplayStream::initExeAndPath(const string& filename)
             throw SnapException("shairport-sync not found");
     }
 
-    if (exe_.find("/") != string::npos)
+    if (exe_.find('/') != string::npos)
     {
-        path_ = exe_.substr(0, exe_.find_last_of("/") + 1);
-        exe_ = exe_.substr(exe_.find_last_of("/") + 1);
+        path_ = exe_.substr(0, exe_.find_last_of('/') + 1);
+        exe_ = exe_.substr(exe_.find_last_of('/') + 1);
     }
 }
 
@@ -302,14 +317,14 @@ void AirplayStream::onStderrMsg(const std::string& line)
 #ifdef HAS_EXPAT
 void XMLCALL AirplayStream::element_start(void* userdata, const char* element_name, const char** attr)
 {
-    AirplayStream* self = (AirplayStream*)userdata;
+    auto* self = static_cast<AirplayStream*>(userdata);
     string name(element_name);
 
     self->buf_.assign("");
     if (name == "item")
         self->entry_.reset(new TageEntry);
 
-    for (int i = 0; attr[i]; i += 2)
+    for (int i = 0; attr[i] != nullptr; i += 2)
     {
         string name(attr[i]);
         string value(attr[i + 1]);
@@ -320,7 +335,7 @@ void XMLCALL AirplayStream::element_start(void* userdata, const char* element_na
 
 void XMLCALL AirplayStream::element_end(void* userdata, const char* element_name)
 {
-    AirplayStream* self = (AirplayStream*)userdata;
+    auto* self = static_cast<AirplayStream*>(userdata);
     string name(element_name);
 
     if (name == "code")
@@ -330,7 +345,7 @@ void XMLCALL AirplayStream::element_end(void* userdata, const char* element_name
         self->entry_->type.assign(hex2str(self->buf_));
 
     else if (name == "length")
-        self->entry_->length = strtoul(self->buf_.c_str(), 0, 10);
+        self->entry_->length = strtoul(self->buf_.c_str(), nullptr, 10);
 
     else if (name == "data")
         self->entry_->data = self->buf_;
@@ -346,8 +361,8 @@ void XMLCALL AirplayStream::element_end(void* userdata, const char* element_name
 
 void XMLCALL AirplayStream::data(void* userdata, const char* content, int length)
 {
-    AirplayStream* self = (AirplayStream*)userdata;
-    string value(content, (size_t)length);
+    auto* self = static_cast<AirplayStream*>(userdata);
+    string value(content, static_cast<size_t>(length));
     self->buf_.append(value);
 }
 

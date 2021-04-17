@@ -1,6 +1,6 @@
 /***
     This file is part of snapcast
-    Copyright (C) 2014-2020  Johannes Pohl
+    Copyright (C) 2014-2021  Johannes Pohl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -36,7 +36,7 @@ static constexpr auto LOG_TAG = "PcmStream";
 
 
 PcmStream::PcmStream(PcmListener* pcmListener, boost::asio::io_context& ioc, const StreamUri& uri)
-    : active_(false), pcmListener_(pcmListener), uri_(uri), chunk_ms_(20), state_(ReaderState::kIdle), ioc_(ioc)
+    : active_(false), pcmListeners_{pcmListener}, uri_(uri), chunk_ms_(20), state_(ReaderState::kIdle), ioc_(ioc)
 {
     encoder::EncoderFactory encoderFactory;
     if (uri_.query.find(kUriCodec) == uri_.query.end())
@@ -50,7 +50,7 @@ PcmStream::PcmStream(PcmListener* pcmListener, boost::asio::io_context& ioc, con
     if (uri_.query.find(kUriSampleFormat) == uri_.query.end())
         throw SnapException("Stream URI must have a sampleformat");
     sampleFormat_ = SampleFormat(uri_.query[kUriSampleFormat]);
-    LOG(INFO, LOG_TAG) << "PcmStream sampleFormat: " << sampleFormat_.toString() << "\n";
+    LOG(INFO, LOG_TAG) << "PcmStream: " << name_ << ", sampleFormat: " << sampleFormat_.toString() << "\n";
 
     if (uri_.query.find(kUriChunkMs) != uri_.query.end())
         chunk_ms_ = cpt::stoul(uri_.query[kUriChunkMs]);
@@ -95,10 +95,17 @@ const SampleFormat& PcmStream::getSampleFormat() const
 }
 
 
+std::string PcmStream::getCodec() const
+{
+    return encoder_->name();
+}
+
+
 void PcmStream::start()
 {
-    LOG(DEBUG, LOG_TAG) << "Start, sampleformat: " << sampleFormat_.toString() << "\n";
-    encoder_->init(this, sampleFormat_);
+    LOG(DEBUG, LOG_TAG) << "Start: " << name_ << ", sampleformat: " << sampleFormat_.toString() << "\n";
+    encoder_->init([this](const encoder::Encoder& encoder, std::shared_ptr<msg::PcmChunk> chunk, double duration) { chunkEncoded(encoder, chunk, duration); },
+                   sampleFormat_);
     active_ = true;
 }
 
@@ -115,21 +122,26 @@ ReaderState PcmStream::getState() const
 }
 
 
-void PcmStream::setState(const ReaderState& newState)
+void PcmStream::setState(ReaderState newState)
 {
     if (newState != state_)
     {
-        LOG(INFO, LOG_TAG) << "State changed: " << static_cast<int>(state_) << " => " << static_cast<int>(newState) << "\n";
+        LOG(INFO, LOG_TAG) << "State changed: " << name_ << ", state: " << static_cast<int>(state_) << " => " << static_cast<int>(newState) << "\n";
         state_ = newState;
-        if (pcmListener_)
-            pcmListener_->onStateChanged(this, newState);
+        for (auto* listener : pcmListeners_)
+        {
+            if (listener != nullptr)
+                listener->onStateChanged(this, newState);
+        }
     }
 }
 
 
-void PcmStream::onChunkEncoded(const encoder::Encoder* /*encoder*/, std::shared_ptr<msg::PcmChunk> chunk, double duration)
+void PcmStream::chunkEncoded(const encoder::Encoder& encoder, std::shared_ptr<msg::PcmChunk> chunk, double duration)
 {
-    // LOG(TRACE, LOG_TAG) << "onChunkEncoded: " << duration << " ms, compression ratio: " << 100 - ceil(100 * (chunk->durationMs() / duration)) << "%\n";
+    std::ignore = encoder;
+    // LOG(TRACE, LOG_TAG) << "onChunkEncoded: " << getName() << ", duration: " << duration << " ms, compression ratio: " << 100 - ceil(100 *
+    // (chunk->durationMs() / duration)) << "%\n";
     if (duration <= 0)
         return;
 
@@ -140,14 +152,32 @@ void PcmStream::onChunkEncoded(const encoder::Encoder* /*encoder*/, std::shared_
 
     // update tvEncodedChunk_ to the next chunk start by adding the current chunk duration
     tvEncodedChunk_ += std::chrono::nanoseconds(static_cast<std::chrono::nanoseconds::rep>(duration * 1000000));
-    if (pcmListener_)
-        pcmListener_->onNewChunk(this, chunk, duration);
+    for (auto* listener : pcmListeners_)
+    {
+        if (listener != nullptr)
+            listener->onChunkEncoded(this, chunk, duration);
+    }
 }
 
 
-void PcmStream::onChunkRead(const msg::PcmChunk& chunk)
+void PcmStream::chunkRead(const msg::PcmChunk& chunk)
 {
+    for (auto* listener : pcmListeners_)
+    {
+        if (listener != nullptr)
+            listener->onChunkRead(this, chunk);
+    }
     encoder_->encode(chunk);
+}
+
+
+void PcmStream::resync(const std::chrono::nanoseconds& duration)
+{
+    for (auto* listener : pcmListeners_)
+    {
+        if (listener != nullptr)
+            listener->onResync(this, duration.count() / 1000000.);
+    }
 }
 
 
@@ -162,7 +192,9 @@ json PcmStream::toJson() const
         state = "disabled";
 
     json j = {
-        {"uri", uri_.toJson()}, {"id", getId()}, {"status", state},
+        {"uri", uri_.toJson()},
+        {"id", getId()},
+        {"status", state},
     };
 
     if (meta_)
@@ -171,20 +203,31 @@ json PcmStream::toJson() const
     return j;
 }
 
+
+void PcmStream::addListener(PcmListener* pcmListener)
+{
+    pcmListeners_.push_back(pcmListener);
+}
+
+
 std::shared_ptr<msg::StreamTags> PcmStream::getMeta() const
 {
     return meta_;
 }
 
+
 void PcmStream::setMeta(const json& jtag)
 {
     meta_.reset(new msg::StreamTags(jtag));
     meta_->msg["STREAM"] = name_;
-    LOG(INFO, LOG_TAG) << "metadata=" << meta_->msg.dump(4) << "\n";
+    LOG(INFO, LOG_TAG) << "Stream: " << name_ << ", metadata=" << meta_->msg.dump(4) << "\n";
 
     // Trigger a stream update
-    if (pcmListener_)
-        pcmListener_->onMetaChanged(this);
+    for (auto* listener : pcmListeners_)
+    {
+        if (listener != nullptr)
+            listener->onMetaChanged(this);
+    }
 }
 
 } // namespace streamreader
